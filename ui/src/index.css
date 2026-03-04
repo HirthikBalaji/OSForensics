@@ -1,0 +1,12 @@
+:root{
+  --bg:#f6f7fb;
+  --fg:#0f172a;
+}
+html,body,#root{height:100%;}
+body{
+  margin:0;
+  font-family:Inter, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial;
+  background:var(--bg);
+  color:var(--fg);
+}
+.app{max-width:900px;margin:32px auto;padding:24px;background:#fff;border-radius:8px;box-shadow:0 6px 18px rgba(12,18,30,0.08)}
