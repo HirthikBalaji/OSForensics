@@ -1,4 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import {
+  Search, Upload, FileText, Trash2, Settings, Microscope,
+  X, FolderOpen, Info, Keyboard, ChevronRight, AlertTriangle,
+  CheckCircle, HardDrive, Activity,
+} from "lucide-react";
 
 // ─── API ──────────────────────────────────────────────────────────────────────
 const API = "http://127.0.0.1:8000";
@@ -62,7 +67,9 @@ function Modal({ title, onClose, children, width = 540 }) {
       <div className="modal-window" ref={ref} style={style}>
         <div className="modal-titlebar" onMouseDown={onMouseDown}>
           <span className="modal-title">{title}</span>
-          <button className="modal-close" onClick={onClose} title="Close (Esc)">✕</button>
+          <button className="modal-close" onClick={onClose} title="Close (Esc)">
+            <X size={14} />
+          </button>
         </div>
         <div className="modal-body">{children}</div>
       </div>
@@ -100,6 +107,7 @@ function AnalyzeDialog({ onClose, onResult }) {
       {err && <div className="dlg-error">{err}</div>}
       <div className="dlg-actions">
         <button className="btn-primary" onClick={run} disabled={loading || !path}>
+          <Search size={14} />
           {loading ? "Analyzing…" : "Analyze"}
         </button>
         <button className="btn-secondary" onClick={onClose}>Cancel</button>
@@ -137,6 +145,7 @@ function UploadDialog({ onClose, onResult }) {
       {err && <div className="dlg-error">{err}</div>}
       <div className="dlg-actions">
         <button className="btn-primary" onClick={run} disabled={loading || !file}>
+          <Upload size={14} />
           {loading ? "Uploading…" : "Upload & Analyze"}
         </button>
         <button className="btn-secondary" onClick={onClose}>Cancel</button>
@@ -159,8 +168,8 @@ function ReportPanel({ report, onClose }) {
   }
 
   const riskColor = {
-    high: "#e53e3e", medium: "#d69e2e", low: "#38a169",
-    "privacy-infrastructure": "#805ad5", "dual-use": "#3182ce",
+    high: "#dc2626", medium: "#d97706", low: "#16a34a",
+    "privacy-infrastructure": "#7c3aed", "dual-use": "#2563eb",
   };
 
   return (
@@ -192,7 +201,7 @@ function ReportPanel({ report, onClose }) {
                   <td><strong>{f.tool}</strong></td>
                   <td>
                     <span className="risk-badge"
-                      style={{ background: riskColor[f.risk] || "#718096" }}>
+                      style={{ background: riskColor[f.risk] || "#6b7280" }}>
                       {f.risk}
                     </span>
                   </td>
@@ -210,11 +219,13 @@ function ReportPanel({ report, onClose }) {
 
       <section className="rp-section rp-summary">
         <span>Total tools: <strong>{summary?.total_tools ?? 0}</strong></span>
-        <span>High risk: <strong style={{ color: "#e53e3e" }}>{summary?.high_risk ?? 0}</strong></span>
+        <span>High risk: <strong style={{ color: "#dc2626" }}>{summary?.high_risk ?? 0}</strong></span>
       </section>
 
       <div className="dlg-actions">
-        <button className="btn-primary" onClick={download}>Export JSON</button>
+        <button className="btn-primary" onClick={download}>
+          <FolderOpen size={14} /> Export JSON
+        </button>
         <button className="btn-secondary" onClick={onClose}>Close</button>
       </div>
     </Modal>
@@ -226,7 +237,9 @@ function AboutDialog({ onClose }) {
   return (
     <Modal title="About OS Forensics" onClose={onClose} width={420}>
       <div className="about-body">
-        <div className="about-icon">🔬</div>
+        <div className="about-icon">
+          <Microscope size={52} strokeWidth={1.4} />
+        </div>
         <h2>OS Forensics</h2>
         <p className="about-ver">Prototype — build 0.1.0</p>
         <p>Forensic detection and analysis tool for Linux-based environments. Supports live mounts and raw disk images via pytsk3 (SleuthKit).</p>
@@ -312,9 +325,9 @@ function MenuBar({ onAction }) {
       { label: "Exit",                         key: "exit" },
     ],
     Edit: [
-      { label: "Clear Report",   key: "clear" },
+      { label: "Clear Report",  key: "clear" },
       { type: "sep" },
-      { label: "Preferences…",  key: "settings", shortcut: "Ctrl+," },
+      { label: "Preferences…", key: "settings", shortcut: "Ctrl+," },
     ],
     View: [
       { label: "Toggle Toolbar",    key: "toolbar" },
@@ -370,25 +383,26 @@ function MenuBar({ onAction }) {
 }
 
 // ─── TOOLBAR ──────────────────────────────────────────────────────────────────
+const TOOLBAR_BUTTONS = [
+  { Icon: Search,   label: "Analyze", key: "analyze",  title: "Analyze (Ctrl+O)" },
+  { Icon: Upload,   label: "Upload",  key: "upload",   title: "Upload (Ctrl+U)" },
+  { Icon: FileText, label: "Report",  key: "report",   title: "Report (Ctrl+R)" },
+  { type: "sep" },
+  { Icon: Trash2,   label: "Clear",   key: "clear",    title: "Clear report" },
+  { type: "sep" },
+  { Icon: Settings, label: "Prefs",   key: "settings", title: "Preferences (Ctrl+,)" },
+];
+
 function Toolbar({ visible, onAction }) {
   if (!visible) return null;
-  const buttons = [
-    { icon: "🔍", label: "Analyze", key: "analyze", title: "Analyze (Ctrl+O)" },
-    { icon: "📤", label: "Upload",  key: "upload",  title: "Upload (Ctrl+U)" },
-    { icon: "📄", label: "Report",  key: "report",  title: "Report (Ctrl+R)" },
-    { type: "sep" },
-    { icon: "🗑",  label: "Clear",   key: "clear",   title: "Clear report" },
-    { type: "sep" },
-    { icon: "⚙️", label: "Prefs",   key: "settings", title: "Preferences (Ctrl+,)" },
-  ];
   return (
     <div className="toolbar" role="toolbar">
-      {buttons.map((b, i) =>
+      {TOOLBAR_BUTTONS.map((b, i) =>
         b.type === "sep" ? (
           <div key={i} className="tb-sep" />
         ) : (
           <button key={i} className="tb-btn" title={b.title} onClick={() => onAction(b.key)}>
-            <span className="tb-icon">{b.icon}</span>
+            <span className="tb-icon"><b.Icon size={18} strokeWidth={1.6} /></span>
             <span className="tb-label">{b.label}</span>
           </button>
         )
@@ -402,15 +416,20 @@ function StatusBar({ visible, status, report }) {
   if (!visible) return null;
   return (
     <div className="statusbar">
+      <Activity size={11} className="sb-icon" />
       <span className="sb-status">{status}</span>
       {report && (
         <>
           <span className="sb-sep" />
+          <HardDrive size={11} className="sb-icon" />
           <span>OS: <strong>{report.os_info?.name || "Unknown"}</strong></span>
           <span className="sb-sep" />
           <span>Findings: <strong>{report.findings?.length ?? 0}</strong></span>
           <span className="sb-sep" />
           <span className={report.summary?.high_risk > 0 ? "sb-high" : "sb-ok"}>
+            {report.summary?.high_risk > 0
+              ? <AlertTriangle size={11} className="sb-icon" />
+              : <CheckCircle  size={11} className="sb-icon" />}
             High Risk: {report.summary?.high_risk ?? 0}
           </span>
         </>
@@ -423,22 +442,24 @@ function StatusBar({ visible, status, report }) {
 function WorkspaceHome({ onAction }) {
   return (
     <div className="ws-home">
-      <div className="ws-logo">🔬</div>
+      <div className="ws-logo">
+        <Microscope size={64} strokeWidth={1.2} className="ws-logo-icon" />
+      </div>
       <h1 className="ws-title">OS Forensics</h1>
       <p className="ws-sub">Forensic detection and analysis for Linux-based environments</p>
       <div className="ws-quickactions">
         <button className="qa-btn" onClick={() => onAction("analyze")}>
-          <span className="qa-icon">🔍</span>
+          <span className="qa-icon"><Search size={28} strokeWidth={1.5} /></span>
           <span className="qa-label">Analyze Image</span>
           <span className="qa-hint">Ctrl+O</span>
         </button>
         <button className="qa-btn" onClick={() => onAction("upload")}>
-          <span className="qa-icon">📤</span>
+          <span className="qa-icon"><Upload size={28} strokeWidth={1.5} /></span>
           <span className="qa-label">Upload Image</span>
           <span className="qa-hint">Ctrl+U</span>
         </button>
         <button className="qa-btn" onClick={() => onAction("report")}>
-          <span className="qa-icon">📄</span>
+          <span className="qa-icon"><FileText size={28} strokeWidth={1.5} /></span>
           <span className="qa-label">Last Report</span>
           <span className="qa-hint">Ctrl+R</span>
         </button>
@@ -450,10 +471,10 @@ function WorkspaceHome({ onAction }) {
 
 // ─── ROOT APP ─────────────────────────────────────────────────────────────────
 export default function App() {
-  const [dialog, setDialog]     = useState(null);
-  const [report, setReport]     = useState(null);
-  const [status, setStatus]     = useState("Ready");
-  const [toolbar, setToolbar]   = useState(true);
+  const [dialog, setDialog]       = useState(null);
+  const [report, setReport]       = useState(null);
+  const [status, setStatus]       = useState("Ready");
+  const [toolbar, setToolbar]     = useState(true);
   const [statusbar, setStatusbar] = useState(true);
 
   function openDialog(key) { setDialog(key); }
@@ -489,7 +510,6 @@ export default function App() {
     URL.revokeObjectURL(url);
   }
 
-  // Global keyboard shortcuts
   useEffect(() => {
     function onKey(e) {
       if (e.ctrlKey && e.key === "o") { e.preventDefault(); handleAction("analyze"); }
@@ -505,7 +525,7 @@ export default function App() {
   return (
     <div className="app-shell">
       <div className="titlebar">
-        <span className="title-icon">🔬</span>
+        <Microscope size={16} strokeWidth={1.8} className="title-icon" />
         <span className="title-name">OS Forensics</span>
         <span className="title-build">Prototype</span>
       </div>

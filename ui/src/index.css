@@ -51,7 +51,7 @@ html, body, #root {
   gap: 8px;
   flex-shrink: 0;
 }
-.title-icon { font-size: 15px; }
+.title-icon { display:flex; align-items:center; color:#93c5fd; flex-shrink:0; }
 .title-name {
   color: #fff;
   font-weight: 700;
@@ -157,7 +157,7 @@ html, body, #root {
   border-color: var(--border);
 }
 .tb-btn:active { background: #d8e2f5; }
-.tb-icon { font-size: 18px; line-height: 1; }
+.tb-icon { display:flex; align-items:center; justify-content:center; color: var(--fg); }
 .tb-label { font-size: 10px; color: var(--fg-muted); }
 .tb-sep {
   width: 1px;
@@ -181,7 +181,8 @@ html, body, #root {
   max-width: 560px;
   width: 100%;
 }
-.ws-logo   { font-size: 56px; margin-bottom: 12px; }
+.ws-logo { margin-bottom: 16px; display:flex; justify-content:center; }
+.ws-logo-icon { color: var(--accent); }
 .ws-title  { font-size: 26px; font-weight: 700; color: #111827; margin-bottom: 6px; }
 .ws-sub    { font-size: 14px; color: var(--fg-muted); margin-bottom: 32px; }
 .ws-quickactions {
@@ -209,7 +210,7 @@ html, body, #root {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(37,99,235,.08);
 }
-.qa-icon  { font-size: 28px; }
+.qa-icon  { display:flex; align-items:center; justify-content:center; color: var(--accent); }
 .qa-label { font-size: 13px; font-weight: 600; color: var(--fg); }
 .qa-hint  { font-size: 11px; color: var(--fg-muted); font-family: monospace; }
 .ws-tip   { font-size: 12px; color: var(--fg-muted); }
@@ -235,9 +236,10 @@ html, body, #root {
   flex-shrink: 0;
 }
 .sb-status { flex: 1; }
+.sb-icon   { display:inline-flex; vertical-align:middle; opacity:.8; }
 .sb-sep  { width: 1px; height: 14px; background: rgba(255,255,255,.2); }
-.sb-high { color: #fca5a5; font-weight: 600; }
-.sb-ok   { color: #86efac; }
+.sb-high { color: #fca5a5; font-weight: 600; display:inline-flex; align-items:center; gap:4px; }
+.sb-ok   { color: #86efac; display:inline-flex; align-items:center; gap:4px; }
 
 /* ── Modal overlay ─────────────────────────────────────────────────────────── */
 .modal-overlay {
@@ -276,9 +278,12 @@ html, body, #root {
   color: rgba(255,255,255,.7);
   font-size: 14px;
   cursor: pointer;
-  padding: 2px 6px;
+  padding: 4px;
   border-radius: 3px;
   line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .modal-close:hover { background: rgba(255,255,255,.15); color: #fff; }
 .modal-body {
@@ -344,6 +349,9 @@ html, body, #root {
   font: inherit;
   font-weight: 600;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 .btn-primary:hover  { background: var(--accent-dk); }
 .btn-primary:disabled { opacity: .55; cursor: not-allowed; }
@@ -428,7 +436,7 @@ html, body, #root {
 
 /* ── About dialog ──────────────────────────────────────────────────────────── */
 .about-body { text-align: center; padding: 8px 0 16px; }
-.about-icon { font-size: 48px; margin-bottom: 10px; }
+.about-icon { display:flex; justify-content:center; margin-bottom:12px; color: var(--accent); }
 .about-body h2 { font-size: 20px; margin-bottom: 4px; }
 .about-ver { color: var(--fg-muted); font-size: 12px; margin-bottom: 12px; }
 .about-body p { font-size: 13px; color: var(--fg-muted); line-height: 1.6; margin-bottom: 8px; }
