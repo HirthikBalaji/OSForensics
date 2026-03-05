@@ -1075,8 +1075,6 @@ export default function App() {
               onExport={() => downloadJSON(report)}
             />
           )}
-          {/* fallback: nothing loaded yet */}
-          {!report && !imgPath && <WorkspaceHome onAction={handleAction} />}
         </div>
       </div>
 
