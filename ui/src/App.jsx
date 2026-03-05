@@ -2,51 +2,60 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   Search, Upload, Trash2, Settings, Microscope,
   X, FolderOpen, AlertTriangle, CheckCircle, HardDrive, Activity,
-  Clock, Shield, Eye, ChevronDown, ChevronUp, Hash, Terminal,
-  Lock, Server, Key,
+  Clock, Shield, Eye, ChevronDown, ChevronRight, Hash, Terminal,
+  Lock, Server, Key, Folder, FolderOpen as FolderOpenIcon, FileText,
+  Wifi, Package, List, Database, Cpu, Box, Globe, Users, ChevronUp,
+  File, Code, RefreshCw, Info, LayoutPanelLeft,
 } from "lucide-react";
 
 // ─── API ──────────────────────────────────────────────────────────────────────
 const API = "http://127.0.0.1:8000";
 
-async function apiAnalyze(path) {
-  const res = await fetch(`${API}/analyze`, {
+const post = async (url, body) => {
+  const res = await fetch(`${API}${url}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ image_path: path }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
   return res.json();
-}
+};
 
-async function apiUpload(file) {
-  const fd = new FormData();
-  fd.append("file", file, file.name);
-  const res = await fetch(`${API}/upload`, { method: "POST", body: fd });
+const get = async (url) => {
+  const res = await fetch(`${API}${url}`);
   if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
   return res.json();
-}
+};
 
-// ─── Severity helpers ─────────────────────────────────────────────────────────
-const SEV_COLOR = {
-  high:   "#dc2626",
-  medium: "#d97706",
-  low:    "#16a34a",
-  info:   "#2563eb",
+const apiAnalyze  = (path)       => post("/analyze",        { image_path: path });
+const apiUpload   = (file) => {
+  const fd = new FormData();
+  fd.append("file", file, file.name);
+  return fetch(`${API}/upload`, { method: "POST", body: fd })
+    .then(r => r.ok ? r.json() : r.text().then(t => Promise.reject(new Error(t))));
 };
-const SEV_BG = {
-  high:   "#fff1f0",
-  medium: "#fffbeb",
-  low:    "#f0fdf4",
-  info:   "#eff6ff",
-};
+const apiBrowse   = (img, path)  => post("/explore/browse", { image_path: img, path });
+const apiStat     = (img, path)  => post("/explore/stat",   { image_path: img, path });
+const apiRead     = (img, path)  => post("/explore/read",   { image_path: img, path });
+const apiTree     = ()           => get("/explore/tree");
+
+// ─── Severity / icon helpers ──────────────────────────────────────────────────
+const SEV_COLOR = { high: "#dc2626", medium: "#d97706", low: "#16a34a", info: "#2563eb" };
+const SEV_BG    = { high: "#fff1f0", medium: "#fffbeb", low: "#f0fdf4", info: "#eff6ff" };
+
 function SevBadge({ sev }) {
   const s = (sev || "info").toLowerCase();
-  return (
-    <span className="sev-badge" style={{ background: SEV_COLOR[s] || "#6b7280" }}>
-      {s}
-    </span>
-  );
+  return <span className="sev-badge" style={{ background: SEV_COLOR[s] || "#6b7280" }}>{s}</span>;
+}
+
+const ICON_MAP = {
+  HardDrive, Terminal, Lock, Server, Key, Folder, FileText, Wifi, Package, List,
+  Database, Cpu, Box, Globe, Users, Clock, Shield, Activity, AlertTriangle, File,
+  Hash, Eye, Search, FolderOpen: FolderOpenIcon,
+};
+function NodeIcon({ name, size = 14, style }) {
+  const C = ICON_MAP[name] || File;
+  return <C size={size} style={style} />;
 }
 
 // ─── MODAL ────────────────────────────────────────────────────────────────────
@@ -58,28 +67,22 @@ function Modal({ title, onClose, children, width = 540 }) {
     return () => window.removeEventListener("keydown", h);
   }, [onClose]);
 
-  const drag = useRef({ dragging: false, ox: 0, oy: 0 });
+  const drag = useRef({ d: false, ox: 0, oy: 0 });
   const [pos, setPos] = useState(null);
-  const onMouseDown = (e) => {
-    const r = ref.current.getBoundingClientRect();
-    drag.current = { dragging: true, ox: e.clientX - r.left, oy: e.clientY - r.top };
-  };
-  const onMouseMove = useCallback((e) => {
-    if (!drag.current.dragging) return;
-    setPos({ x: e.clientX - drag.current.ox, y: e.clientY - drag.current.oy });
-  }, []);
-  const onMouseUp = useCallback(() => { drag.current.dragging = false; }, []);
+  const onMD = (e) => { const r = ref.current.getBoundingClientRect(); drag.current = { d: true, ox: e.clientX - r.left, oy: e.clientY - r.top }; };
+  const onMM = useCallback((e) => { if (!drag.current.d) return; setPos({ x: e.clientX - drag.current.ox, y: e.clientY - drag.current.oy }); }, []);
+  const onMU = useCallback(() => { drag.current.d = false; }, []);
   useEffect(() => {
-    window.addEventListener("mousemove", onMouseMove);
-    window.addEventListener("mouseup", onMouseUp);
-    return () => { window.removeEventListener("mousemove", onMouseMove); window.removeEventListener("mouseup", onMouseUp); };
-  }, [onMouseMove, onMouseUp]);
+    window.addEventListener("mousemove", onMM);
+    window.addEventListener("mouseup", onMU);
+    return () => { window.removeEventListener("mousemove", onMM); window.removeEventListener("mouseup", onMU); };
+  }, [onMM, onMU]);
 
   const style = pos ? { position: "fixed", left: pos.x, top: pos.y, transform: "none", width } : { width };
   return (
     <div className="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="modal-window" ref={ref} style={style}>
-        <div className="modal-titlebar" onMouseDown={onMouseDown}>
+        <div className="modal-titlebar" onMouseDown={onMD}>
           <span className="modal-title">{title}</span>
           <button className="modal-close" onClick={onClose}><X size={14} /></button>
         </div>
@@ -89,15 +92,15 @@ function Modal({ title, onClose, children, width = 540 }) {
   );
 }
 
-// ─── ANALYZE DIALOG ───────────────────────────────────────────────────────────
+// ─── Dialogs ──────────────────────────────────────────────────────────────────
 function AnalyzeDialog({ onClose, onResult }) {
   const [path, setPath] = useState("");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
   async function run() {
-    if (!path) return;
+    if (!path.trim()) return;
     setLoading(true); setErr(null);
-    try { const r = await apiAnalyze(path); onResult(r); onClose(); }
+    try { onResult(await apiAnalyze(path.trim()), path.trim()); onClose(); }
     catch (e) { setErr(String(e)); }
     finally { setLoading(false); }
   }
@@ -107,12 +110,12 @@ function AnalyzeDialog({ onClose, onResult }) {
         <label>Path to image / mountpoint</label>
         <input autoFocus value={path} onChange={(e) => setPath(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && run()}
-          placeholder="/mnt/snapshot  or  /path/to/disk.img" />
+          placeholder="/mnt/snapshot  or  /path/to/disk.img  or  /" />
         <div className="dlg-hint">Use a mounted directory path for non-pytsk3 environments.</div>
       </div>
       {err && <div className="dlg-error">{err}</div>}
       <div className="dlg-actions">
-        <button className="btn-primary" onClick={run} disabled={loading || !path}>
+        <button className="btn-primary" onClick={run} disabled={loading || !path.trim()}>
           <Search size={14} />{loading ? "Analyzing…" : "Analyze"}
         </button>
         <button className="btn-secondary" onClick={onClose}>Cancel</button>
@@ -121,7 +124,6 @@ function AnalyzeDialog({ onClose, onResult }) {
   );
 }
 
-// ─── UPLOAD DIALOG ────────────────────────────────────────────────────────────
 function UploadDialog({ onClose, onResult }) {
   const [file, setFile] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -129,7 +131,7 @@ function UploadDialog({ onClose, onResult }) {
   async function run() {
     if (!file) return;
     setLoading(true); setErr(null);
-    try { const r = await apiUpload(file); onResult(r); onClose(); }
+    try { onResult(await apiUpload(file), file.name); onClose(); }
     catch (e) { setErr(String(e)); }
     finally { setLoading(false); }
   }
@@ -138,7 +140,7 @@ function UploadDialog({ onClose, onResult }) {
       <div className="dlg-field">
         <label>Select disk image file</label>
         <input type="file" onChange={(e) => setFile(e.target.files[0])} />
-        <div className="dlg-hint">File is uploaded to the server, analyzed, then deleted automatically.</div>
+        <div className="dlg-hint">File is uploaded, analyzed, then deleted automatically.</div>
       </div>
       {file && <div className="dlg-fileinfo">Selected: <strong>{file.name}</strong> ({(file.size/1024/1024).toFixed(1)} MB)</div>}
       {err && <div className="dlg-error">{err}</div>}
@@ -152,24 +154,21 @@ function UploadDialog({ onClose, onResult }) {
   );
 }
 
-// ─── ABOUT DIALOG ─────────────────────────────────────────────────────────────
 function AboutDialog({ onClose }) {
   return (
     <Modal title="About OS Forensics" onClose={onClose} width={420}>
       <div className="about-body">
         <div className="about-icon"><Microscope size={52} strokeWidth={1.4} /></div>
         <h2>OS Forensics</h2>
-        <p className="about-ver">build 0.2.0</p>
-        <p>Advanced forensic detection and analysis tool for Linux-based environments. Supports live mounts and raw disk images via pytsk3 (SleuthKit).</p>
+        <p className="about-ver">build 0.3.0 — Explorative Edition</p>
+        <p>Advanced forensic detection and artifact exploration for Linux-based environments. Autopsy-style navigation with full inode metadata, file viewer, and analysis reports.</p>
         <p className="about-stack">Backend: Python · FastAPI · pytsk3<br />Frontend: React · Vite</p>
-        <p className="about-stack">Engines: Timeline Reconstruction · Deleted File Detection · Persistence Scanner</p>
       </div>
       <div className="dlg-actions"><button className="btn-primary" onClick={onClose}>OK</button></div>
     </Modal>
   );
 }
 
-// ─── SETTINGS DIALOG ──────────────────────────────────────────────────────────
 function SettingsDialog({ onClose }) {
   return (
     <Modal title="Preferences" onClose={onClose} width={460}>
@@ -178,19 +177,14 @@ function SettingsDialog({ onClose }) {
         <input defaultValue="http://127.0.0.1:8000" disabled />
         <div className="dlg-hint">Configurable in a future release.</div>
       </div>
-      <div className="dlg-field">
-        <label>Theme</label>
-        <select defaultValue="light"><option value="light">Light</option><option value="dark">Dark (coming soon)</option></select>
-      </div>
       <div className="dlg-actions">
-        <button className="btn-primary" onClick={onClose}>Save</button>
+        <button className="btn-primary" onClick={onClose}>OK</button>
         <button className="btn-secondary" onClick={onClose}>Cancel</button>
       </div>
     </Modal>
   );
 }
 
-// ─── SHORTCUTS DIALOG ─────────────────────────────────────────────────────────
 function ShortcutsDialog({ onClose }) {
   const shortcuts = [
     ["Ctrl + O", "Open Analyze dialog"],
@@ -219,25 +213,21 @@ function MenuBar({ onAction }) {
     window.addEventListener("mousedown", close);
     return () => window.removeEventListener("mousedown", close);
   }, []);
+
   const menus = {
     File: [
-      { label: "Analyze Image / Mountpoint…", key: "analyze",  shortcut: "Ctrl+O" },
-      { label: "Upload Image for Analysis…",   key: "upload",   shortcut: "Ctrl+U" },
+      { label: "Analyze Image / Mountpoint…", key: "analyze", shortcut: "Ctrl+O" },
+      { label: "Upload Image for Analysis…",  key: "upload",  shortcut: "Ctrl+U" },
       { type: "sep" },
-      { label: "Export Report JSON…",          key: "export" },
+      { label: "Export Report JSON…",         key: "export" },
       { type: "sep" },
-      { label: "Clear Analysis",               key: "clear" },
-      { type: "sep" },
-      { label: "Exit",                         key: "exit" },
-    ],
-    Edit: [
-      { label: "Clear Analysis",  key: "clear" },
-      { type: "sep" },
-      { label: "Preferences…",    key: "settings", shortcut: "Ctrl+," },
+      { label: "Clear Analysis",              key: "clear" },
     ],
     View: [
-      { label: "Toggle Toolbar",    key: "toolbar" },
-      { label: "Toggle Status Bar", key: "statusbar" },
+      { label: "Toggle Explorer Sidebar",  key: "explorer" },
+      { label: "Toggle Report Panel",      key: "report_panel" },
+      { label: "Toggle Toolbar",           key: "toolbar" },
+      { label: "Toggle Status Bar",        key: "statusbar" },
     ],
     Tools: [
       { label: "Analyze Image / Mountpoint…", key: "analyze" },
@@ -251,21 +241,21 @@ function MenuBar({ onAction }) {
       { label: "About OS Forensics…", key: "about" },
     ],
   };
+
   function pick(key) { setOpen(null); onAction(key); }
   return (
     <nav className="menubar" ref={barRef} role="menubar">
       {Object.entries(menus).map(([name, items]) => (
         <div key={name} className={`mb-item ${open === name ? "open" : ""}`}>
-          <button className="mb-label" role="menuitem" aria-haspopup="true" aria-expanded={open === name}
-            onClick={() => setOpen(open === name ? null : name)}
+          <button className="mb-label" onClick={() => setOpen(open === name ? null : name)}
             onMouseEnter={() => open && setOpen(name)}>
             {name}
           </button>
           {open === name && (
-            <ul className="mb-dropdown" role="menu">
+            <ul className="mb-dropdown">
               {items.map((item, i) =>
-                item.type === "sep" ? <li key={i} className="mb-sep" role="separator" /> : (
-                  <li key={i} className="mb-option" role="menuitem" onClick={() => pick(item.key)}>
+                item.type === "sep" ? <li key={i} className="mb-sep" /> : (
+                  <li key={i} className="mb-option" onClick={() => pick(item.key)}>
                     <span>{item.label}</span>
                     {item.shortcut && <span className="mb-shortcut">{item.shortcut}</span>}
                   </li>
@@ -280,19 +270,21 @@ function MenuBar({ onAction }) {
 }
 
 // ─── TOOLBAR ──────────────────────────────────────────────────────────────────
-const TOOLBAR_BUTTONS = [
-  { Icon: Search,   label: "Analyze",  key: "analyze",  title: "Analyze (Ctrl+O)" },
-  { Icon: Upload,   label: "Upload",   key: "upload",   title: "Upload (Ctrl+U)" },
-  { type: "sep" },
-  { Icon: Trash2,   label: "Clear",    key: "clear",    title: "Clear analysis" },
-  { type: "sep" },
-  { Icon: Settings, label: "Prefs",    key: "settings", title: "Preferences (Ctrl+,)" },
-];
 function Toolbar({ visible, onAction }) {
   if (!visible) return null;
+  const btns = [
+    { Icon: Search,         label: "Analyze",  key: "analyze",       title: "Analyze (Ctrl+O)" },
+    { Icon: Upload,         label: "Upload",   key: "upload",        title: "Upload (Ctrl+U)" },
+    { type: "sep" },
+    { Icon: LayoutPanelLeft,label: "Explorer", key: "explorer",      title: "Toggle Explorer" },
+    { type: "sep" },
+    { Icon: Trash2,         label: "Clear",    key: "clear",         title: "Clear analysis" },
+    { type: "sep" },
+    { Icon: Settings,       label: "Prefs",    key: "settings",      title: "Preferences" },
+  ];
   return (
-    <div className="toolbar" role="toolbar">
-      {TOOLBAR_BUTTONS.map((b, i) =>
+    <div className="toolbar">
+      {btns.map((b, i) =>
         b.type === "sep" ? <div key={i} className="tb-sep" /> : (
           <button key={i} className="tb-btn" title={b.title} onClick={() => onAction(b.key)}>
             <span className="tb-icon"><b.Icon size={18} strokeWidth={1.6} /></span>
@@ -332,54 +324,388 @@ function StatusBar({ visible, status, report }) {
   );
 }
 
-// ─── WORKSPACE HOME ───────────────────────────────────────────────────────────
-function WorkspaceHome({ onAction }) {
+// ═══════════════════════════════════════════════════════════════════════════════
+// EXPLORER SECTION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── Artifact Tree Node (left sidebar) ────────────────────────────────────────
+function TreeNode({ node, depth = 0, onSelect, selectedId, expandedIds, onToggle }) {
+  const hasChildren = node.children?.length > 0;
+  const isExpanded = expandedIds.has(node.id);
+  const isSelected = selectedId === node.id;
+  const indent = depth * 14;
+
   return (
-    <div className="ws-home">
-      <div className="ws-logo"><Microscope size={64} strokeWidth={1.2} className="ws-logo-icon" /></div>
-      <h1 className="ws-title">OS Forensics</h1>
-      <p className="ws-sub">Advanced forensic detection for Linux-based environments</p>
-      <div className="ws-feature-badges">
-        <span className="feat-badge"><Clock size={12} /> Timeline Engine</span>
-        <span className="feat-badge"><Eye size={12} /> Deleted File Detection</span>
-        <span className="feat-badge"><Shield size={12} /> Persistence Scanner</span>
+    <div>
+      <div
+        className={`tree-node ${isSelected ? "selected" : ""}`}
+        style={{ paddingLeft: 8 + indent }}
+        onClick={() => { onSelect(node); if (hasChildren) onToggle(node.id); }}
+      >
+        <span className="tree-expand-icon">
+          {hasChildren
+            ? (isExpanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />)
+            : <span style={{ display: "inline-block", width: 11 }} />}
+        </span>
+        <span className="tree-node-icon">
+          <NodeIcon
+            name={isExpanded && hasChildren ? "FolderOpen" : node.icon}
+            size={13}
+            style={{ color: isSelected ? "#fff" : undefined }}
+          />
+        </span>
+        <span className="tree-node-label">{node.label}</span>
       </div>
-      <div className="ws-quickactions">
-        <button className="qa-btn" onClick={() => onAction("analyze")}>
-          <span className="qa-icon"><Search size={28} strokeWidth={1.5} /></span>
-          <span className="qa-label">Analyze Image</span>
-          <span className="qa-hint">Ctrl+O</span>
-        </button>
-        <button className="qa-btn" onClick={() => onAction("upload")}>
-          <span className="qa-icon"><Upload size={28} strokeWidth={1.5} /></span>
-          <span className="qa-label">Upload Image</span>
-          <span className="qa-hint">Ctrl+U</span>
-        </button>
-      </div>
-      <p className="ws-tip">Use the <kbd>File</kbd> menu or toolbar to begin. Press <kbd>F1</kbd> for help.</p>
+      {hasChildren && isExpanded && node.children.map((child) => (
+        <TreeNode key={child.id} node={child} depth={depth + 1}
+          onSelect={onSelect} selectedId={selectedId}
+          expandedIds={expandedIds} onToggle={onToggle} />
+      ))}
     </div>
   );
 }
 
-// ─── DASHBOARD ────────────────────────────────────────────────────────────────
-const TABS = [
-  { id: "summary",     label: "Summary",       Icon: HardDrive },
-  { id: "timeline",    label: "Timeline",       Icon: Clock     },
-  { id: "deleted",     label: "Deleted Files",  Icon: Eye       },
-  { id: "persistence", label: "Persistence",    Icon: Shield    },
-  { id: "tools",       label: "Tools",          Icon: Search    },
-];
+// ─── File List (middle pane) ──────────────────────────────────────────────────
+function FileTypeIcon({ type, name }) {
+  if (type === "directory") return <Folder size={13} style={{ color: "#f59e0b" }} />;
+  const ext = name?.split(".").pop()?.toLowerCase();
+  if (["log", "txt", "conf", "cfg", "ini", "md"].includes(ext)) return <FileText size={13} style={{ color: "#6366f1" }} />;
+  if (["sh", "bash", "py", "rb", "pl"].includes(ext))            return <Code     size={13} style={{ color: "#10b981" }} />;
+  if (["service", "socket", "timer"].includes(ext))              return <Server   size={13} style={{ color: "#8b5cf6" }} />;
+  return <File size={13} style={{ color: "#9ca3af" }} />;
+}
+
+function FileList({ entries, onOpen, selectedPath, loading, path }) {
+  if (loading) return <div className="pane-loading"><RefreshCw size={16} className="spin" />Loading…</div>;
+  if (!entries) return <div className="pane-empty"><Folder size={32} /><p>Select an item in the tree to browse.</p></div>;
+  if (entries.length === 0) return <div className="pane-empty"><Folder size={32} /><p>Directory is empty.</p></div>;
+
+  return (
+    <div className="file-list-wrap">
+      <div className="file-list-header">
+        <span className="fl-col-name">Name</span>
+        <span className="fl-col-size">Size</span>
+        <span className="fl-col-mtime">Modified</span>
+        <span className="fl-col-mode">Permissions</span>
+        <span className="fl-col-uid">UID</span>
+      </div>
+      <div className="file-list-body">
+        {entries.map((e) => (
+          <div
+            key={e.path}
+            className={`fl-row ${selectedPath === e.path ? "selected" : ""} ${e.type === "directory" ? "fl-dir" : ""}`}
+            onClick={() => onOpen(e)}
+            onDoubleClick={() => e.type === "directory" && onOpen(e, true)}
+          >
+            <span className="fl-col-name">
+              <FileTypeIcon type={e.type} name={e.name} />
+              <span className="fl-name-text">{e.name}</span>
+              {e.symlink_target && <span className="fl-symlink"> → {e.symlink_target}</span>}
+            </span>
+            <span className="fl-col-size">{e.type === "directory" ? "—" : (e.size_human || "?")}</span>
+            <span className="fl-col-mtime">{e.mtime || "—"}</span>
+            <span className="fl-col-mode"><code className="mono-small">{e.mode || "—"}</code></span>
+            <span className="fl-col-uid">{e.uid ?? "—"}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Metadata / Content Viewer (right pane) ──────────────────────────────────
+function MetaRow({ label, value, mono }) {
+  if (value === undefined || value === null) return null;
+  return (
+    <tr>
+      <td className="meta-key">{label}</td>
+      <td className="meta-val">{mono ? <code className="mono-small">{String(value)}</code> : String(value)}</td>
+    </tr>
+  );
+}
+
+function ContentPane({ item, imgPath }) {
+  const [tab, setTab] = useState("meta");
+  const [content, setContent] = useState(null);
+  const [loadingContent, setLoadingContent] = useState(false);
+  const [contentErr, setContentErr] = useState(null);
+
+  // Reset when item changes
+  useEffect(() => {
+    setTab("meta");
+    setContent(null);
+    setContentErr(null);
+  }, [item?.path]);
+
+  async function loadContent() {
+    if (!item || !imgPath) return;
+    setLoadingContent(true); setContentErr(null);
+    try { setContent(await apiRead(imgPath, item.path)); }
+    catch (e) { setContentErr(String(e)); }
+    finally { setLoadingContent(false); }
+  }
+
+  useEffect(() => {
+    if (tab === "content" && !content && item && !item.is_dir && imgPath) {
+      loadContent();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, item?.path]);
+
+  if (!item) {
+    return (
+      <div className="content-pane-empty">
+        <Info size={32} style={{ opacity: .3 }} />
+        <p>Select a file to view metadata and content.</p>
+      </div>
+    );
+  }
+
+  const suid_flags = [];
+  if (item.is_suid)   suid_flags.push("SUID");
+  if (item.is_sgid)   suid_flags.push("SGID");
+  if (item.is_sticky) suid_flags.push("Sticky");
+
+  return (
+    <div className="content-pane">
+      <div className="content-pane-header">
+        <FileTypeIcon type={item.type} name={item.name} />
+        <span className="content-pane-name" title={item.path}>{item.name || item.path}</span>
+        <span className="content-pane-path" title={item.path}>{item.path}</span>
+        {suid_flags.length > 0 && suid_flags.map(f => (
+          <span key={f} className="sev-badge" style={{ background: "#dc2626", fontSize: 9 }}>{f}</span>
+        ))}
+      </div>
+      <div className="content-pane-tabs">
+        <button className={`cp-tab ${tab === "meta" ? "active" : ""}`} onClick={() => setTab("meta")}>
+          <Info size={11} /> Metadata
+        </button>
+        {!item.is_dir && (
+          <button className={`cp-tab ${tab === "content" ? "active" : ""}`} onClick={() => setTab("content")}>
+            <FileText size={11} /> Content
+          </button>
+        )}
+      </div>
+      <div className="content-pane-body">
+        {tab === "meta" && (
+          <table className="meta-table">
+            <tbody>
+              <MetaRow label="Path"        value={item.path} mono />
+              <MetaRow label="Type"        value={item.type} />
+              <MetaRow label="Size"        value={item.size_human ? `${item.size_human} (${item.size?.toLocaleString()} bytes)` : item.size} />
+              <MetaRow label="Permissions" value={item.mode} mono />
+              <MetaRow label="Mode (octal)"value={item.mode_octal} mono />
+              <MetaRow label="Owner (UID)" value={item.uid} />
+              <MetaRow label="Group (GID)" value={item.gid} />
+              <MetaRow label="Inode"       value={item.inode} />
+              <MetaRow label="Hard Links"  value={item.nlinks} />
+              <MetaRow label="Modified"    value={item.mtime} />
+              <MetaRow label="Accessed"    value={item.atime} />
+              <MetaRow label="Changed"     value={item.ctime} />
+              {item.symlink_target && <MetaRow label="Symlink →" value={item.symlink_target} mono />}
+              {suid_flags.length > 0 && <MetaRow label="Special Bits" value={suid_flags.join(", ")} />}
+            </tbody>
+          </table>
+        )}
+        {tab === "content" && (
+          <div className="file-content-wrap">
+            {loadingContent && <div className="pane-loading"><RefreshCw size={14} className="spin" />Reading file…</div>}
+            {contentErr && <div className="dlg-error">{contentErr}</div>}
+            {content && !loadingContent && (
+              <>
+                {content.truncated && (
+                  <div className="content-truncated-warn">
+                    <AlertTriangle size={12} /> Showing first {content.size_human || ""} — file truncated at 200 KB
+                  </div>
+                )}
+                {content.error && <div className="dlg-error">{content.error}</div>}
+                {content.content != null && (
+                  <pre className={`file-content-pre ${content.encoding === "hex" ? "hex-view" : ""}`}>
+                    {content.content}
+                  </pre>
+                )}
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Full Explorer (3-pane) ───────────────────────────────────────────────────
+function Explorer({ imgPath }) {
+  const [tree, setTree]             = useState(null);
+  const [treeErr, setTreeErr]       = useState(null);
+  const [expandedIds, setExpanded]  = useState(new Set(["os", "logs", "shell_history"]));
+  const [selectedNode, setSelNode]  = useState(null);
+  const [browseEntries, setBrowse]  = useState(null);
+  const [browseLoading, setBrowseL] = useState(false);
+  const [browsePath, setBrowsePath] = useState(null);
+  const [selectedFile, setSelFile]  = useState(null);
+  const [navStack, setNavStack]     = useState([]);
+
+  // Load tree once
+  useEffect(() => {
+    apiTree()
+      .then(d => setTree(d.tree))
+      .catch(e => setTreeErr(String(e)));
+  }, []);
+
+  function toggleExpand(id) {
+    setExpanded(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  async function selectNode(node) {
+    setSelNode(node);
+    setSelFile(null);
+
+    if (!node.path) return; // grouping node, no path
+
+    setBrowseL(true); setBrowse(null); setBrowsePath(node.path);
+    setNavStack([node.path]);
+
+    // Determine if it's a dir or file
+    try {
+      const meta = await apiStat(imgPath, node.path);
+      if (meta.is_dir) {
+        const dir = await apiBrowse(imgPath, node.path);
+        setBrowse(dir.children);
+        setSelFile(meta);
+      } else {
+        // Leaf file: show only the file itself in file list so user can click
+        setBrowse([{ name: node.path.split("/").pop(), path: node.path, type: meta.type, ...meta }]);
+        setSelFile(meta);
+      }
+    } catch (e) {
+      setBrowse([]);
+    } finally {
+      setBrowseL(false);
+    }
+  }
+
+  async function openEntry(entry, navigate = false) {
+    setSelFile(null);
+
+    // Fetch stat
+    let meta;
+    try {
+      meta = await apiStat(imgPath, entry.path);
+    } catch (e) {
+      meta = entry;
+    }
+
+    setSelFile({ ...entry, ...meta });
+
+    if (meta.is_dir && navigate) {
+      // Navigate into directory
+      setBrowseL(true);
+      setBrowsePath(entry.path);
+      setNavStack(prev => [...prev, entry.path]);
+      try {
+        const dir = await apiBrowse(imgPath, entry.path);
+        setBrowse(dir.children);
+      } catch (e) {
+        setBrowse([]);
+      } finally {
+        setBrowseL(false);
+      }
+    }
+  }
+
+  async function navUp() {
+    if (navStack.length <= 1) return;
+    const newStack = navStack.slice(0, -1);
+    const parentPath = newStack[newStack.length - 1];
+    setNavStack(newStack);
+    setBrowsePath(parentPath);
+    setBrowseL(true);
+    try {
+      const dir = await apiBrowse(imgPath, parentPath);
+      setBrowse(dir.children);
+    } catch (e) { setBrowse([]); }
+    finally { setBrowseL(false); }
+  }
+
+  return (
+    <div className="explorer-shell">
+      {/* Left: tree */}
+      <div className="explorer-tree-pane">
+        <div className="explorer-pane-header">
+          <FolderOpenIcon size={12} /> Artifact Tree
+        </div>
+        <div className="explorer-tree-scroll">
+          {treeErr && <div className="dlg-error" style={{ margin: 8, fontSize: 11 }}>{treeErr}</div>}
+          {!tree && !treeErr && <div className="pane-loading"><RefreshCw size={12} className="spin" />Loading…</div>}
+          {tree?.map(node => (
+            <TreeNode key={node.id} node={node}
+              onSelect={selectNode} selectedId={selectedNode?.id}
+              expandedIds={expandedIds} onToggle={toggleExpand} />
+          ))}
+        </div>
+      </div>
+
+      {/* Middle: file list */}
+      <div className="explorer-files-pane">
+        <div className="explorer-pane-header">
+          <Folder size={12} />
+          <span className="explorer-path-label" title={browsePath}>{browsePath || "—"}</span>
+          {navStack.length > 1 && (
+            <button className="nav-up-btn" onClick={navUp} title="Up one level">
+              <ChevronUp size={11} /> Up
+            </button>
+          )}
+        </div>
+        <FileList
+          entries={browseEntries}
+          loading={browseLoading}
+          path={browsePath}
+          selectedPath={selectedFile?.path}
+          onOpen={openEntry}
+        />
+      </div>
+
+      {/* Right: metadata + content */}
+      <div className="explorer-meta-pane">
+        <div className="explorer-pane-header">
+          <Info size={12} /> Properties
+        </div>
+        <ContentPane item={selectedFile} imgPath={imgPath} />
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// REPORT / ANALYSIS TABS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const SRC_ICON = { bash_history: Terminal, "auth.log": Lock, secure: Lock, syslog: Server, messages: Server, inode: Hash };
+const PERSIST_ICONS  = { crontab: Clock, systemd_service: Server, shell_startup: Terminal, ssh_authorized_keys: Key };
+const PERSIST_LABELS = { crontab: "Suspicious Crontab Entries", systemd_service: "Unknown Systemd Services", shell_startup: "Shell Startup Modifications", ssh_authorized_keys: "SSH Authorized Keys" };
+const DEL_TYPE_LABELS = { deleted_inode: "Deleted Inodes (TSK)", missing_expected: "Missing Expected Files", scan_error: "Scan Errors" };
 
 function EmptyState({ icon: Icon, message }) {
+  return <div className="empty-state"><Icon size={36} strokeWidth={1.2} className="empty-icon" /><p>{message}</p></div>;
+}
+
+function SnippetBlock({ snippet }) {
+  const [open, setOpen] = useState(false);
+  if (!snippet) return null;
   return (
-    <div className="empty-state">
-      <Icon size={36} strokeWidth={1.2} className="empty-icon" />
-      <p>{message}</p>
+    <div className="snippet-wrap">
+      <button className="snippet-toggle" onClick={() => setOpen(v => !v)}>
+        {open ? <ChevronUp size={11} /> : <ChevronDown size={11} />} {open ? "Hide" : "Show"} snippet
+      </button>
+      {open && <pre className="snippet-code">{snippet}</pre>}
     </div>
   );
 }
 
-// ── Summary Tab ───────────────────────────────────────────────────────────────
 function SummaryTab({ report }) {
   const { os_info, summary } = report;
   const totalHigh = summary?.total_high ?? 0;
@@ -389,14 +715,14 @@ function SummaryTab({ report }) {
     : totalHigh >= 1  ? { label: "MEDIUM",   cls: "tl-medium"   }
     :                   { label: "CLEAN",    cls: "tl-low"      };
   const stats = [
-    { label: "Tool Findings",        value: summary?.total_tools ?? 0,           danger: false },
-    { label: "High-Risk Tools",      value: summary?.high_risk_tools ?? 0,       danger: true  },
-    { label: "Timeline Events",      value: summary?.timeline_events ?? 0,       danger: false },
-    { label: "High Timeline",        value: summary?.high_timeline ?? 0,         danger: true  },
-    { label: "Deleted / Missing",    value: summary?.deleted_findings ?? 0,      danger: false },
-    { label: "High Deleted",         value: summary?.high_deleted ?? 0,          danger: true  },
-    { label: "Persistence Hits",     value: summary?.persistence_findings ?? 0,  danger: false },
-    { label: "High Persistence",     value: summary?.high_persistence ?? 0,      danger: true  },
+    { label: "Tool Findings",       value: summary?.total_tools ?? 0,          danger: false },
+    { label: "High-Risk Tools",     value: summary?.high_risk_tools ?? 0,      danger: true  },
+    { label: "Timeline Events",     value: summary?.timeline_events ?? 0,      danger: false },
+    { label: "High Timeline",       value: summary?.high_timeline ?? 0,        danger: true  },
+    { label: "Deleted / Missing",   value: summary?.deleted_findings ?? 0,     danger: false },
+    { label: "High Deleted",        value: summary?.high_deleted ?? 0,         danger: true  },
+    { label: "Persistence Hits",    value: summary?.persistence_findings ?? 0, danger: false },
+    { label: "High Persistence",    value: summary?.high_persistence ?? 0,     danger: true  },
   ];
   return (
     <div className="tab-content">
@@ -406,11 +732,9 @@ function SummaryTab({ report }) {
           <div className="sum-os-name">{os_info?.name || "Unknown"}</div>
           <div className="sum-os-meta">
             {os_info?.id && <span className="tag">{os_info.id}</span>}
-            {os_info?.variant_tags?.map((t) => <span key={t} className="tag tag-warn">{t}</span>)}
+            {os_info?.variant_tags?.map(t => <span key={t} className="tag tag-warn">{t}</span>)}
           </div>
-          {os_info?.notes?.length > 0 && (
-            <ul className="sum-os-notes">{os_info.notes.map((n, i) => <li key={i}>{n}</li>)}</ul>
-          )}
+          {os_info?.notes?.length > 0 && <ul className="sum-os-notes">{os_info.notes.map((n, i) => <li key={i}>{n}</li>)}</ul>}
         </div>
         <div className={`sum-threat-card ${threatLevel.cls}`}>
           <div className="sum-threat-label">Threat Level</div>
@@ -430,57 +754,46 @@ function SummaryTab({ report }) {
   );
 }
 
-// ── Timeline Tab ──────────────────────────────────────────────────────────────
-const SRC_ICON = { "bash_history": Terminal, "auth.log": Lock, "secure": Lock, "syslog": Server, "messages": Server, "inode": Hash };
-
 function TimelineTab({ events = [] }) {
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   if (events.length === 0) return <EmptyState icon={Clock} message="No timeline events found." />;
-
   const counts = events.reduce((acc, e) => { acc[e.severity] = (acc[e.severity] || 0) + 1; return acc; }, {});
-  const filtered = events.filter((e) => {
+  const filtered = events.filter(e => {
     if (filter !== "all" && e.severity !== filter) return false;
     if (search && !e.detail.toLowerCase().includes(search.toLowerCase())) return false;
     return true;
   });
-
   return (
     <div className="tab-content">
       <div className="tl-toolbar">
         <div className="tl-filters">
-          {["all", "high", "medium", "info"].map((f) => (
+          {["all", "high", "medium", "info"].map(f => (
             <button key={f} className={`tl-filter-btn ${filter === f ? "active" : ""}`} onClick={() => setFilter(f)}>
               {f === "all" ? `All (${events.length})` : `${f} (${counts[f] || 0})`}
             </button>
           ))}
         </div>
-        <input className="tl-search" placeholder="Search events…" value={search} onChange={(e) => setSearch(e.target.value)} />
+        <input className="tl-search" placeholder="Search events…" value={search} onChange={e => setSearch(e.target.value)} />
       </div>
       <div className="tl-list">
-        {filtered.length === 0 ? (
-          <div className="tl-empty">No events match the current filter.</div>
-        ) : filtered.map((ev, i) => {
-          const Icon = SRC_ICON[ev.source] || Activity;
-          return (
-            <div key={i} className="tl-row" style={{ borderLeft: `3px solid ${SEV_COLOR[ev.severity] || "#6b7280"}`, background: SEV_BG[ev.severity] || "#fff" }}>
-              <div className="tl-ts">{ev.timestamp}</div>
-              <span className="tl-icon-wrap"><Icon size={13} style={{ color: SEV_COLOR[ev.severity] || "#6b7280" }} /></span>
-              <div className="tl-body">
-                <span className="tl-source">[{ev.source}]</span>
-                <span className="tl-detail">{ev.detail}</span>
-              </div>
-              <SevBadge sev={ev.severity} />
-            </div>
-          );
-        })}
+        {filtered.length === 0
+          ? <div className="tl-empty">No events match the current filter.</div>
+          : filtered.map((ev, i) => {
+              const Icon = SRC_ICON[ev.source] || Activity;
+              return (
+                <div key={i} className="tl-row" style={{ borderLeft: `3px solid ${SEV_COLOR[ev.severity] || "#6b7280"}`, background: SEV_BG[ev.severity] || "#fff" }}>
+                  <div className="tl-ts">{ev.timestamp}</div>
+                  <span className="tl-icon-wrap"><Icon size={13} style={{ color: SEV_COLOR[ev.severity] || "#6b7280" }} /></span>
+                  <div className="tl-body"><span className="tl-source">[{ev.source}]</span><span className="tl-detail">{ev.detail}</span></div>
+                  <SevBadge sev={ev.severity} />
+                </div>
+              );
+            })}
       </div>
     </div>
   );
 }
-
-// ── Deleted Files Tab ─────────────────────────────────────────────────────────
-const DEL_TYPE_LABELS = { deleted_inode: "Deleted Inodes (TSK)", missing_expected: "Missing Expected Files", scan_error: "Scan Errors" };
 
 function DeletedTab({ findings = [] }) {
   if (findings.length === 0) return <EmptyState icon={Eye} message="No deleted or missing files detected." />;
@@ -489,11 +802,7 @@ function DeletedTab({ findings = [] }) {
     <div className="tab-content">
       {Object.entries(byType).map(([type, items]) => (
         <div key={type} className="del-group">
-          <div className="del-group-header">
-            <Eye size={13} />
-            <span>{DEL_TYPE_LABELS[type] || type}</span>
-            <span className="del-count">{items.length}</span>
-          </div>
+          <div className="del-group-header"><Eye size={13} /><span>{DEL_TYPE_LABELS[type] || type}</span><span className="del-count">{items.length}</span></div>
           <div className="del-list">
             {items.map((f, i) => (
               <div key={i} className="del-row" style={{ borderLeft: `3px solid ${SEV_COLOR[f.severity] || "#6b7280"}` }}>
@@ -509,23 +818,6 @@ function DeletedTab({ findings = [] }) {
   );
 }
 
-// ── Persistence Tab ───────────────────────────────────────────────────────────
-const PERSIST_ICONS  = { crontab: Clock, systemd_service: Server, shell_startup: Terminal, ssh_authorized_keys: Key };
-const PERSIST_LABELS = { crontab: "Suspicious Crontab Entries", systemd_service: "Unknown Systemd Services", shell_startup: "Shell Startup Modifications", ssh_authorized_keys: "SSH Authorized Keys" };
-
-function SnippetBlock({ snippet }) {
-  const [open, setOpen] = useState(false);
-  if (!snippet) return null;
-  return (
-    <div className="snippet-wrap">
-      <button className="snippet-toggle" onClick={() => setOpen((v) => !v)}>
-        {open ? <ChevronUp size={11} /> : <ChevronDown size={11} />} {open ? "Hide" : "Show"} snippet
-      </button>
-      {open && <pre className="snippet-code">{snippet}</pre>}
-    </div>
-  );
-}
-
 function PersistenceTab({ findings = [] }) {
   if (findings.length === 0) return <EmptyState icon={Shield} message="No persistence mechanisms detected." />;
   const byCategory = findings.reduce((acc, f) => { const k = f.category || "other"; if (!acc[k]) acc[k] = []; acc[k].push(f); return acc; }, {});
@@ -535,11 +827,7 @@ function PersistenceTab({ findings = [] }) {
         const Icon = PERSIST_ICONS[cat] || Shield;
         return (
           <div key={cat} className="persist-group">
-            <div className="persist-group-header">
-              <Icon size={13} />
-              <span>{PERSIST_LABELS[cat] || cat}</span>
-              <span className="del-count">{items.length}</span>
-            </div>
+            <div className="persist-group-header"><Icon size={13} /><span>{PERSIST_LABELS[cat] || cat}</span><span className="del-count">{items.length}</span></div>
             <div className="persist-list">
               {items.map((f, i) => (
                 <div key={i} className="persist-row" style={{ borderLeft: `3px solid ${SEV_COLOR[f.severity] || "#6b7280"}` }}>
@@ -559,7 +847,6 @@ function PersistenceTab({ findings = [] }) {
   );
 }
 
-// ── Tools Tab ─────────────────────────────────────────────────────────────────
 const RISK_COLOR = { high: "#dc2626", medium: "#d97706", low: "#16a34a", "privacy-infrastructure": "#7c3aed", "dual-use": "#2563eb", infrastructure: "#0891b2" };
 function ToolsTab({ findings = [] }) {
   if (findings.length === 0) return <EmptyState icon={Search} message="No notable tools detected." />;
@@ -572,11 +859,7 @@ function ToolsTab({ findings = [] }) {
             <tr key={i}>
               <td><strong>{f.tool}</strong></td>
               <td><span className="sev-badge" style={{ background: RISK_COLOR[f.risk] || "#6b7280" }}>{f.risk}</span></td>
-              <td>
-                <ul className="evidence-list">
-                  {f.evidence?.map((ev, j) => <li key={j}><code>{ev}</code></li>)}
-                </ul>
-              </td>
+              <td><ul className="evidence-list">{f.evidence?.map((ev, j) => <li key={j}><code>{ev}</code></li>)}</ul></td>
             </tr>
           ))}
         </tbody>
@@ -585,43 +868,49 @@ function ToolsTab({ findings = [] }) {
   );
 }
 
-// ── Dashboard ─────────────────────────────────────────────────────────────────
-function WorkspaceDashboard({ report, onClear, onExport }) {
+// ─── Dashboard (Report panel) ─────────────────────────────────────────────────
+const REPORT_TABS = [
+  { id: "summary",     label: "Summary",      Icon: HardDrive },
+  { id: "timeline",    label: "Timeline",     Icon: Clock     },
+  { id: "deleted",     label: "Deleted",      Icon: Eye       },
+  { id: "persistence", label: "Persistence",  Icon: Shield    },
+  { id: "tools",       label: "Tools",        Icon: Search    },
+];
+
+function ReportPanel({ report, onClear, onExport }) {
   const [tab, setTab] = useState("summary");
   const { summary } = report;
-  const tabBadge = {
+  const badge = {
     timeline:    summary?.high_timeline    > 0 ? summary.high_timeline    : null,
     deleted:     summary?.high_deleted     > 0 ? summary.high_deleted     : null,
     persistence: summary?.high_persistence > 0 ? summary.high_persistence : null,
     tools:       summary?.high_risk_tools  > 0 ? summary.high_risk_tools  : null,
   };
   return (
-    <div className="dashboard">
-      <div className="dash-header">
-        <div className="dash-header-left">
-          <Microscope size={18} strokeWidth={1.6} className="dash-logo" />
-          <span className="dash-title">Analysis Report</span>
+    <div className="report-panel">
+      <div className="report-panel-header">
+        <div className="report-panel-header-left">
+          <Microscope size={15} strokeWidth={1.6} style={{ color: "#2563eb" }} />
+          <span className="report-panel-title">Analysis Report</span>
           <span className="dash-os">{report.os_info?.name || "Unknown OS"}</span>
           {(summary?.total_high ?? 0) > 0 && (
-            <span className="dash-alert">
-              <AlertTriangle size={12} />{summary.total_high} high-severity indicator{summary.total_high !== 1 ? "s" : ""}
-            </span>
+            <span className="dash-alert"><AlertTriangle size={11} />{summary.total_high} high</span>
           )}
         </div>
-        <div className="dash-header-right">
-          <button className="btn-secondary btn-sm" onClick={onExport}><FolderOpen size={13} /> Export JSON</button>
-          <button className="btn-secondary btn-sm" onClick={onClear}><Trash2 size={13} /> Clear</button>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button className="btn-secondary btn-sm" onClick={onExport}><FolderOpen size={12} /> Export</button>
+          <button className="btn-secondary btn-sm" onClick={onClear}><Trash2 size={12} /> Clear</button>
         </div>
       </div>
-      <div className="dash-tabbar">
-        {TABS.map(({ id, label, Icon }) => (
+      <div className="report-tabbar">
+        {REPORT_TABS.map(({ id, label, Icon }) => (
           <button key={id} className={`dash-tab ${tab === id ? "active" : ""}`} onClick={() => setTab(id)}>
-            <Icon size={13} />{label}
-            {tabBadge[id] != null && <span className="tab-badge">{tabBadge[id]}</span>}
+            <Icon size={12} />{label}
+            {badge[id] != null && <span className="tab-badge">{badge[id]}</span>}
           </button>
         ))}
       </div>
-      <div className="dash-body">
+      <div className="report-panel-body">
         {tab === "summary"     && <SummaryTab     report={report} />}
         {tab === "timeline"    && <TimelineTab    events={report.timeline} />}
         {tab === "deleted"     && <DeletedTab     findings={report.deleted} />}
@@ -632,18 +921,54 @@ function WorkspaceDashboard({ report, onClear, onExport }) {
   );
 }
 
-// ─── ROOT APP ─────────────────────────────────────────────────────────────────
+// ─── WORKSPACE HOME ───────────────────────────────────────────────────────────
+function WorkspaceHome({ onAction }) {
+  return (
+    <div className="ws-home">
+      <div className="ws-logo"><Microscope size={64} strokeWidth={1.2} className="ws-logo-icon" /></div>
+      <h1 className="ws-title">OS Forensics</h1>
+      <p className="ws-sub">Advanced forensic detection &amp; artifact exploration for Linux-based environments</p>
+      <div className="ws-feature-badges">
+        <span className="feat-badge"><Clock size={12} /> Timeline Engine</span>
+        <span className="feat-badge"><Eye size={12} /> Deleted Detection</span>
+        <span className="feat-badge"><Shield size={12} /> Persistence Scanner</span>
+        <span className="feat-badge"><FolderOpenIcon size={12} /> Artifact Explorer</span>
+      </div>
+      <div className="ws-quickactions">
+        <button className="qa-btn" onClick={() => onAction("analyze")}>
+          <span className="qa-icon"><Search size={28} strokeWidth={1.5} /></span>
+          <span className="qa-label">Analyze Image</span>
+          <span className="qa-hint">Ctrl+O</span>
+        </button>
+        <button className="qa-btn" onClick={() => onAction("upload")}>
+          <span className="qa-icon"><Upload size={28} strokeWidth={1.5} /></span>
+          <span className="qa-label">Upload Image</span>
+          <span className="qa-hint">Ctrl+U</span>
+        </button>
+      </div>
+      <p className="ws-tip">Use the <kbd>File</kbd> menu or toolbar to begin. Press <kbd>F1</kbd> for help.</p>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ROOT APP
+// ═══════════════════════════════════════════════════════════════════════════════
 export default function App() {
-  const [dialog,    setDialog]    = useState(null);
-  const [report,    setReport]    = useState(null);
-  const [status,    setStatus]    = useState("Ready");
-  const [toolbar,   setToolbar]   = useState(true);
-  const [statbar,   setStatbar]   = useState(true);
+  const [dialog,       setDialog]      = useState(null);
+  const [report,       setReport]      = useState(null);
+  const [imgPath,      setImgPath]     = useState(null);
+  const [status,       setStatus]      = useState("Ready");
+  const [toolbar,      setToolbar]     = useState(true);
+  const [statbar,      setStatbar]     = useState(true);
+  const [showExplorer, setShowExplorer]= useState(true);
+  const [showReport,   setShowReport]  = useState(true);
 
   function closeDialog() { setDialog(null); }
 
-  function handleResult(r) {
+  function handleResult(r, path) {
     setReport(r);
+    setImgPath(path || imgPath);
     const hi = r.summary?.total_high ?? 0;
     setStatus(
       `Analysis complete — ${r.findings?.length ?? 0} tool(s), ` +
@@ -654,25 +979,24 @@ export default function App() {
 
   function downloadJSON(r) {
     const blob = new Blob([JSON.stringify(r, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url; a.download = "forensic_report.json"; a.click();
-    URL.revokeObjectURL(url);
+    a.href = URL.createObjectURL(blob); a.download = "forensic_report.json"; a.click();
   }
 
   function handleAction(key) {
     switch (key) {
-      case "analyze":   return setDialog("analyze");
-      case "upload":    return setDialog("upload");
-      case "export":    return report ? downloadJSON(report) : setStatus("No report to export");
-      case "clear":     setReport(null); return setStatus("Analysis cleared");
-      case "settings":  return setDialog("settings");
-      case "shortcuts": return setDialog("shortcuts");
-      case "about":     return setDialog("about");
-      case "statusbar": return setStatbar((v) => !v);
-      case "toolbar":   return setToolbar((v) => !v);
-      case "exit":      return setStatus("Close the browser tab to exit.");
-      default:          return;
+      case "analyze":      return setDialog("analyze");
+      case "upload":       return setDialog("upload");
+      case "export":       return report ? downloadJSON(report) : setStatus("No report to export");
+      case "clear":        setReport(null); setImgPath(null); return setStatus("Analysis cleared");
+      case "settings":     return setDialog("settings");
+      case "shortcuts":    return setDialog("shortcuts");
+      case "about":        return setDialog("about");
+      case "statusbar":    return setStatbar(v => !v);
+      case "toolbar":      return setToolbar(v => !v);
+      case "explorer":     return setShowExplorer(v => !v);
+      case "report_panel": return setShowReport(v => !v);
+      default:             return;
     }
   }
 
@@ -687,21 +1011,48 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   });
 
+  const hasContent = report || imgPath;
+
   return (
     <div className="app-shell">
       <div className="titlebar">
         <Microscope size={16} strokeWidth={1.8} className="title-icon" />
         <span className="title-name">OS Forensics</span>
         <span className="title-build">Advanced Forensic Analysis</span>
+        {imgPath && <span className="title-path">{imgPath}</span>}
       </div>
       <MenuBar onAction={handleAction} />
       <Toolbar visible={toolbar} onAction={handleAction} />
+
       <div className="workspace">
-        {report
-          ? <WorkspaceDashboard report={report} onClear={() => handleAction("clear")} onExport={() => downloadJSON(report)} />
-          : <WorkspaceHome onAction={handleAction} />}
+        {!hasContent ? (
+          <WorkspaceHome onAction={handleAction} />
+        ) : (
+          <div className="main-panes">
+            {/* Explorer always visible when we have a path */}
+            {showExplorer && imgPath && (
+              <Explorer imgPath={imgPath} />
+            )}
+
+            {/* Report panel — shown when analysis has run */}
+            {showReport && report && (
+              <ReportPanel
+                report={report}
+                onClear={() => handleAction("clear")}
+                onExport={() => downloadJSON(report)}
+              />
+            )}
+
+            {/* If explorer hidden or no path yet, show placeholder */}
+            {!showExplorer && !report && (
+              <WorkspaceHome onAction={handleAction} />
+            )}
+          </div>
+        )}
       </div>
+
       <StatusBar visible={statbar} status={status} report={report} />
+
       {dialog === "analyze"   && <AnalyzeDialog   onClose={closeDialog} onResult={handleResult} />}
       {dialog === "upload"    && <UploadDialog    onClose={closeDialog} onResult={handleResult} />}
       {dialog === "settings"  && <SettingsDialog  onClose={closeDialog} />}

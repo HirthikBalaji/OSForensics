@@ -9,6 +9,12 @@ Extended endpoints:
   POST /timeline          – timeline-only scan for a given path
   POST /deleted           – deleted-file scan for a given path
   POST /persistence       – persistence-mechanism scan for a given path
+
+Explorer endpoints (Autopsy-style navigation):
+  POST /explore/tree      – static artifact category tree
+  POST /explore/browse    – list directory children with metadata
+  POST /explore/stat      – full inode metadata for a single path
+  POST /explore/read      – read file content (text or hex preview)
 """
 from __future__ import annotations
 
@@ -16,6 +22,7 @@ import os
 import shutil
 import tempfile
 import traceback
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,6 +31,7 @@ from pydantic import BaseModel
 from .classifier import classify_findings
 from .deleted import detect_deleted
 from .detector import detect_os, detect_tools
+from .explorer import ARTIFACT_TREE, browse, stat_file, read_text
 from .extractor import FilesystemAccessor
 from .persistence import detect_persistence
 from .report import build_report
@@ -32,6 +40,12 @@ from .timeline import build_timeline
 
 class AnalyzeRequest(BaseModel):
     image_path: str
+
+
+class ExploreRequest(BaseModel):
+    image_path: str
+    path: str
+    limit: Optional[int] = 200_000
 
 
 app = FastAPI(title="OS Forensics API")
@@ -132,5 +146,52 @@ def persistence_scan(req: AnalyzeRequest):
         raise HTTPException(status_code=400, detail=str(e))
     try:
         return {"persistence": detect_persistence(fs)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
+
+
+# ── Explorer endpoints (Autopsy-style navigation) ─────────────────────────────
+
+@app.get("/explore/tree")
+def artifact_tree():
+    """Return the static artifact category tree (no image_path needed)."""
+    return {"tree": ARTIFACT_TREE}
+
+
+@app.post("/explore/browse")
+def explore_browse(req: ExploreRequest):
+    """List a directory with per-entry inode metadata."""
+    try:
+        fs = FilesystemAccessor(req.image_path)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
+        return browse(fs, req.path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
+
+
+@app.post("/explore/stat")
+def explore_stat(req: ExploreRequest):
+    """Return full inode metadata for a single path."""
+    try:
+        fs = FilesystemAccessor(req.image_path)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
+        return stat_file(fs, req.path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
+
+
+@app.post("/explore/read")
+def explore_read(req: ExploreRequest):
+    """Read file content (UTF-8 text or hex preview for binary files)."""
+    try:
+        fs = FilesystemAccessor(req.image_path)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
+        return read_text(fs, req.path, limit=req.limit or 200_000)
     except Exception as e:
         raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
