@@ -51,6 +51,33 @@ class PersistenceFinding(BaseModel):
     snippet: str = ""
 
 
+# ── Configuration analysis models ─────────────────────────────────────────────
+
+class ConfigFinding(BaseModel):
+    config: str
+    category: str
+    detail: str
+    severity: str = "info"
+    snippet: str = ""
+    recommendation: str = ""
+
+
+# ── Service detection models ──────────────────────────────────────────────────
+
+class ServiceFinding(BaseModel):
+    name: str
+    display_name: str
+    description: str = ""
+    category: str
+    state: str
+    exec_start: str = ""
+    run_user: str = "root"
+    severity: str = "info"
+    source: str = "systemd"
+    flags: List[str] = []
+    unit_path: str = ""
+
+
 # ── Top-level report ──────────────────────────────────────────────────────────
 
 class ForensicReport(BaseModel):
@@ -60,6 +87,8 @@ class ForensicReport(BaseModel):
     timeline: List[TimelineEvent] = []
     deleted: List[DeletedFinding] = []
     persistence: List[PersistenceFinding] = []
+    config: List[ConfigFinding] = []
+    services: List[ServiceFinding] = []
 
 
 def build_report(
@@ -68,6 +97,8 @@ def build_report(
     timeline: Optional[List[Dict]] = None,
     deleted: Optional[List[Dict]] = None,
     persistence: Optional[List[Dict]] = None,
+    config: Optional[List[Dict]] = None,
+    services: Optional[List[Dict]] = None,
 ) -> ForensicReport:
     os_model = OSInfo(
         name=os_info.get("name"),
@@ -93,9 +124,19 @@ def build_report(
         PersistenceFinding(**p) for p in (persistence or [])
     ]
 
+    config_findings = [
+        ConfigFinding(**c) for c in (config or [])
+    ]
+
+    service_findings = [
+        ServiceFinding(**s) for s in (services or [])
+    ]
+
     high_timeline  = sum(1 for e in timeline_events  if e.severity == "high")
     high_deleted   = sum(1 for d in deleted_findings  if d.severity == "high")
     high_persist   = sum(1 for p in persistence_findings if p.severity == "high")
+    high_config    = sum(1 for c in config_findings if c.severity in ("high", "critical"))
+    high_services  = sum(1 for s in service_findings if s.severity in ("high", "critical"))
 
     summary = {
         "total_tools":         len(tool_findings),
@@ -108,7 +149,12 @@ def build_report(
         "high_deleted":        high_deleted,
         "persistence_findings": len(persistence_findings),
         "high_persistence":    high_persist,
-        "total_high":          sum(1 for f in tool_findings if f.risk == "high") + high_timeline + high_deleted + high_persist,
+        "config_findings":     len(config_findings),
+        "high_config":         high_config,
+        "service_count":       len(service_findings),
+        "high_services":       high_services,
+        "enabled_services":    sum(1 for s in service_findings if s.state == "enabled"),
+        "total_high":          sum(1 for f in tool_findings if f.risk == "high") + high_timeline + high_deleted + high_persist + high_config + high_services,
     }
 
     return ForensicReport(
@@ -118,4 +164,6 @@ def build_report(
         timeline=timeline_events,
         deleted=deleted_findings,
         persistence=persistence_findings,
+        config=config_findings,
+        services=service_findings,
     )

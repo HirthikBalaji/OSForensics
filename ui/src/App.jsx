@@ -1870,11 +1870,427 @@ function ToolsTab({ findings = [] }) {
 }
 
 // ─── Dashboard (Report panel) ─────────────────────────────────────────────────
+
+// Config analyser labels and icons per config file / group
+const CFG_FILE_META = {
+  sshd_config:  { label: "SSH Server (sshd_config)", Icon: Key },
+  sudoers:      { label: "sudo (sudoers)",            Icon: Shield },
+  iptables:     { label: "IPTables / Firewall",       Icon: Wifi },
+  ufw:          { label: "UFW Firewall",              Icon: Wifi },
+  "pam.d":      { label: "PAM Configuration",         Icon: Lock },
+  "sysctl.conf":{ label: "Kernel Parameters (sysctl)",Icon: Cpu  },
+  "login.defs": { label: "Password Policy",           Icon: Users },
+  "/etc/hosts": { label: "/etc/hosts",                Icon: Globe },
+  "resolv.conf":{ label: "DNS (resolv.conf)",         Icon: Globe },
+  apparmor:     { label: "AppArmor",                  Icon: Shield },
+  selinux:      { label: "SELinux",                   Icon: Shield },
+  MAC:          { label: "Mandatory Access Control",  Icon: Shield },
+  network:      { label: "Network Interfaces",        Icon: Wifi },
+};
+
+const SEV_ORDER = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+
+function ConfigFindingRow({ f }) {
+  const [open, setOpen] = useState(false);
+  const borderColor = SEV_COLOR[f.severity] || "#6b7280";
+  return (
+    <div className="cfg-row" style={{ borderLeft: `3px solid ${borderColor}` }}>
+      <div className="cfg-row-top">
+        <span className="cfg-category">{f.category}</span>
+        <SevBadge sev={f.severity} />
+        {f.recommendation && (
+          <button className="cfg-rec-toggle" onClick={() => setOpen(v => !v)} title="Show recommendation">
+            {open ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+          </button>
+        )}
+      </div>
+      <div className="cfg-detail">{f.detail}</div>
+      {f.snippet && <pre className="cfg-snippet">{f.snippet}</pre>}
+      {open && f.recommendation && (
+        <div className="cfg-recommendation">
+          <CheckCircle size={11} /> {f.recommendation}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ConfigGroup({ configKey, findings }) {
+  const [collapsed, setCollapsed] = useState(false);
+  const meta = CFG_FILE_META[configKey] || { label: configKey, Icon: FileText };
+  const { Icon } = meta;
+  const critCount  = findings.filter(f => f.severity === "critical").length;
+  const highCount  = findings.filter(f => f.severity === "high").length;
+  const warnCount  = findings.filter(f => f.severity === "medium").length;
+  const topSev     = critCount ? "critical" : highCount ? "high" : warnCount ? "medium" : "info";
+  const alertCount = critCount + highCount;
+
+  return (
+    <div className="cfg-group">
+      <button className="cfg-group-header" onClick={() => setCollapsed(v => !v)}>
+        <Icon size={13} style={{ color: SEV_COLOR[topSev] || "#6b7280", flexShrink: 0 }} />
+        <span className="cfg-group-title">{meta.label}</span>
+        {alertCount > 0 && (
+          <span className="cfg-alert-badge" style={{ background: SEV_COLOR[topSev] }}>{alertCount}</span>
+        )}
+        <span className="cfg-group-total">{findings.length} finding{findings.length !== 1 ? "s" : ""}</span>
+        <span style={{ marginLeft: "auto" }}>
+          {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+        </span>
+      </button>
+      {!collapsed && (
+        <div className="cfg-group-body">
+          {findings.map((f, i) => <ConfigFindingRow key={i} f={f} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ConfigTab({ findings = [] }) {
+  const [severityFilter, setSeverityFilter] = useState("all");
+  const [search, setSearch] = useState("");
+
+  if (findings.length === 0)
+    return <EmptyState icon={Settings} message="No configuration findings available." />;
+
+  const filtered = findings.filter(f => {
+    if (severityFilter !== "all" && f.severity !== severityFilter) return false;
+    if (search) {
+      const q = search.toLowerCase();
+      return f.detail.toLowerCase().includes(q)
+          || f.config.toLowerCase().includes(q)
+          || f.category.toLowerCase().includes(q)
+          || (f.recommendation || "").toLowerCase().includes(q);
+    }
+    return true;
+  });
+
+  // Group by config file, sorted so highest-severity groups come first
+  const grouped = filtered.reduce((acc, f) => {
+    const key = f.config;
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(f);
+    return acc;
+  }, {});
+
+  const sortedKeys = Object.keys(grouped).sort((a, b) => {
+    const sevA = Math.min(...grouped[a].map(f => SEV_ORDER[f.severity] ?? 4));
+    const sevB = Math.min(...grouped[b].map(f => SEV_ORDER[f.severity] ?? 4));
+    return sevA - sevB;
+  });
+
+  const critCount = findings.filter(f => f.severity === "critical").length;
+  const highCount = findings.filter(f => f.severity === "high").length;
+  const medCount  = findings.filter(f => f.severity === "medium").length;
+
+  const SEV_FILTERS = [
+    { id: "all",      label: "All" },
+    { id: "critical", label: "Critical", color: SEV_COLOR.critical },
+    { id: "high",     label: "High",     color: SEV_COLOR.high     },
+    { id: "medium",   label: "Medium",   color: SEV_COLOR.medium   },
+    { id: "low",      label: "Low",      color: SEV_COLOR.low      },
+    { id: "info",     label: "Info",     color: "#6b7280"          },
+  ];
+
+  return (
+    <div className="tab-content cfg-tab">
+      {/* Summary bar */}
+      <div className="cfg-summary-bar">
+        {critCount > 0 && (
+          <span className="cfg-sev-pill" style={{ background: "#fef2f2", color: SEV_COLOR.critical, border: "1px solid #fecaca" }}>
+            <AlertTriangle size={11} /> {critCount} Critical
+          </span>
+        )}
+        {highCount > 0 && (
+          <span className="cfg-sev-pill" style={{ background: "#fff7ed", color: SEV_COLOR.high, border: "1px solid #fed7aa" }}>
+            <AlertTriangle size={11} /> {highCount} High
+          </span>
+        )}
+        {medCount > 0 && (
+          <span className="cfg-sev-pill" style={{ background: "#fffbeb", color: SEV_COLOR.medium, border: "1px solid #fde68a" }}>
+            <AlertTriangle size={11} /> {medCount} Medium
+          </span>
+        )}
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
+          <div className="cfg-sev-filters">
+            {SEV_FILTERS.map(({ id, label, color }) => (
+              <button key={id}
+                className={`cfg-sev-filter ${severityFilter === id ? "active" : ""}`}
+                style={severityFilter === id && color ? { background: color, color: "#fff", borderColor: color } : {}}
+                onClick={() => setSeverityFilter(id)}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <input className="tl-search" placeholder="Search…" value={search}
+            onChange={e => setSearch(e.target.value)} style={{ maxWidth: 200 }} />
+        </div>
+      </div>
+
+      {filtered.length === 0 ? (
+        <EmptyState icon={CheckCircle} message="No findings match the current filter." />
+      ) : (
+        sortedKeys.map(key => (
+          <ConfigGroup key={key} configKey={key} findings={grouped[key]} />
+        ))
+      )}
+    </div>
+  );
+}
+
+// ─── Services Tab ─────────────────────────────────────────────────────────────
+
+const SVC_CAT_META = {
+  web_server:    { label: "Web Server",    Icon: Globe          },
+  ftp_server:    { label: "FTP Server",    Icon: FolderOpenIcon },
+  database:      { label: "Database",      Icon: Database       },
+  mail:          { label: "Mail",          Icon: Package        },
+  dns:           { label: "DNS",           Icon: Wifi           },
+  dhcp:          { label: "DHCP",          Icon: Wifi           },
+  ssh:           { label: "SSH",           Icon: Terminal       },
+  remote_access: { label: "Remote Access", Icon: Cpu            },
+  file_sharing:  { label: "File Sharing",  Icon: FolderOpenIcon },
+  vpn:           { label: "VPN",           Icon: Lock           },
+  container:     { label: "Container",     Icon: Box            },
+  proxy:         { label: "Proxy",         Icon: Server         },
+  monitoring:    { label: "Monitoring",    Icon: BarChart2      },
+  security:      { label: "Security",      Icon: Shield         },
+  crypto_mining: { label: "Crypto Mining", Icon: AlertTriangle  },
+  system:        { label: "System",        Icon: Settings       },
+  other:         { label: "Other",         Icon: Package        },
+};
+
+const SVC_STATE_COLOR = {
+  enabled:  { bg: "#dcfce7", color: "#166534", border: "#bbf7d0" },
+  disabled: { bg: "#f1f5f9", color: "#64748b", border: "#e2e8f0" },
+  masked:   { bg: "#fef2f2", color: "#991b1b", border: "#fecaca" },
+  static:   { bg: "#eff6ff", color: "#1d4ed8", border: "#bfdbfe" },
+  indirect: { bg: "#f0fdfa", color: "#0f766e", border: "#99f6e4" },
+  detected: { bg: "#fff7ed", color: "#92400e", border: "#fed7aa" },
+};
+
+const SVC_FLAG_LABELS = {
+  "unusual-exec-path":    "Unusual exec path",
+  "shell-exec":           "Shell exec",
+  "root-exec":            "Runs as root",
+  "unencrypted-protocol": "Unencrypted protocol",
+  "deprecated-protocol":  "Deprecated protocol",
+  "crypto-miner":         "Possible crypto miner",
+  "potential-no-auth":    "Potential no-auth",
+  "config-only":          "Config file only",
+  "masked":               "Masked",
+};
+
+function ServiceRow({ svc }) {
+  const [open, setOpen] = useState(false);
+  const meta     = SVC_CAT_META[svc.category] || SVC_CAT_META.other;
+  const CatIcon  = meta.Icon;
+  const stateSty = SVC_STATE_COLOR[svc.state] || SVC_STATE_COLOR.disabled;
+  const sevColor = SEV_COLOR[svc.severity] || "#6b7280";
+  const hasDetail = svc.description || svc.exec_start || svc.unit_path || svc.flags?.length > 0;
+
+  return (
+    <div className="svc-row" style={{ borderLeftColor: sevColor }}>
+      <div className="svc-row-top">
+        <span className="svc-cat-icon" style={{ color: sevColor }}>
+          <CatIcon size={15} />
+        </span>
+        <div className="svc-name-group">
+          <span className="svc-name">{svc.name}</span>
+          {svc.display_name && svc.display_name !== svc.name && (
+            <span className="svc-display-name">{svc.display_name}</span>
+          )}
+        </div>
+        <div className="svc-badges">
+          <span className="svc-state-badge" style={{ background: stateSty.bg, color: stateSty.color, border: `1px solid ${stateSty.border}` }}>
+            {svc.state}
+          </span>
+          <span className="svc-cat-badge">{meta.label}</span>
+          {svc.severity !== "info" && <SevBadge sev={svc.severity} />}
+        </div>
+        {hasDetail && (
+          <button className="svc-detail-toggle" onClick={() => setOpen(v => !v)}>
+            {open ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+          </button>
+        )}
+      </div>
+      {open && (
+        <div className="svc-row-body">
+          {svc.description && (
+            <div className="svc-desc">{svc.description}</div>
+          )}
+          {svc.exec_start && (
+            <div className="svc-exec">
+              <span className="svc-exec-label">Exec</span>
+              <code>{svc.exec_start}</code>
+            </div>
+          )}
+          {svc.run_user && svc.run_user !== "root" && svc.run_user !== "unknown" && (
+            <div className="svc-exec">
+              <span className="svc-exec-label">User</span>
+              <code>{svc.run_user}</code>
+            </div>
+          )}
+          {svc.unit_path && (
+            <div className="svc-exec">
+              <span className="svc-exec-label">Path</span>
+              <code>{svc.unit_path}</code>
+            </div>
+          )}
+          {svc.flags?.length > 0 && (
+            <div className="svc-flags">
+              {svc.flags.map(f => (
+                <span key={f} className="svc-flag"
+                  style={f === "unusual-exec-path" || f === "deprecated-protocol" || f === "crypto-miner"
+                    ? { background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca" }
+                    : f === "unencrypted-protocol" || f === "shell-exec"
+                    ? { background: "#fff7ed", color: "#92400e", border: "1px solid #fed7aa" }
+                    : {}}>
+                  {SVC_FLAG_LABELS[f] || f}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ServicesTab({ services = [] }) {
+  const [stateFilter, setStateFilter] = useState("all");
+  const [catFilter,   setCatFilter]   = useState("all");
+  const [sevFilter,   setSevFilter]   = useState("all");
+  const [search,      setSearch]      = useState("");
+
+  if (services.length === 0)
+    return <EmptyState icon={Server} message="No services detected." />;
+
+  const filtered = services.filter(s => {
+    if (stateFilter !== "all" && s.state   !== stateFilter) return false;
+    if (catFilter   !== "all" && s.category !== catFilter)  return false;
+    if (sevFilter   !== "all" && s.severity !== sevFilter)  return false;
+    if (search) {
+      const q = search.toLowerCase();
+      return s.name.toLowerCase().includes(q)
+          || (s.display_name || "").toLowerCase().includes(q)
+          || (s.description  || "").toLowerCase().includes(q)
+          || (s.exec_start   || "").toLowerCase().includes(q);
+    }
+    return true;
+  });
+
+  const enabledCount = services.filter(s => s.state    === "enabled").length;
+  const critCount    = services.filter(s => s.severity === "critical").length;
+  const highCount    = services.filter(s => s.severity === "high").length;
+
+  const catCounts = services.reduce((acc, s) => {
+    acc[s.category] = (acc[s.category] || 0) + 1;
+    return acc;
+  }, {});
+  const presentCats = Object.keys(catCounts).sort();
+
+  const STATE_FILTERS = [
+    { id: "all",      label: "All"      },
+    { id: "enabled",  label: "Enabled"  },
+    { id: "disabled", label: "Disabled" },
+    { id: "static",   label: "Static"   },
+    { id: "masked",   label: "Masked"   },
+    { id: "detected", label: "Detected" },
+  ].filter(f => f.id === "all" || services.some(s => s.state === f.id));
+
+  const SEV_FILTERS = [
+    { id: "all",      label: "All"      },
+    { id: "critical", label: "Critical" },
+    { id: "high",     label: "High"     },
+    { id: "medium",   label: "Medium"   },
+    { id: "low",      label: "Low"      },
+    { id: "info",     label: "Info"     },
+  ].filter(f => f.id === "all" || services.some(s => s.severity === f.id));
+
+  return (
+    <div className="tab-content svc-tab">
+
+      {/* Summary bar */}
+      <div className="svc-summary-bar">
+        <span className="svc-stat"><strong>{services.length}</strong> total</span>
+        <span className="svc-stat" style={{ color: "#166534" }}>
+          <strong>{enabledCount}</strong> enabled
+        </span>
+        {critCount > 0 && (
+          <span className="svc-stat" style={{ color: SEV_COLOR.critical }}>
+            <AlertTriangle size={11} /> <strong>{critCount}</strong> critical
+          </span>
+        )}
+        {highCount > 0 && (
+          <span className="svc-stat" style={{ color: SEV_COLOR.high }}>
+            <AlertTriangle size={11} /> <strong>{highCount}</strong> high
+          </span>
+        )}
+      </div>
+
+      {/* Category chips */}
+      <div className="svc-cat-bar">
+        <button
+          className={`svc-cat-chip ${catFilter === "all" ? "active" : ""}`}
+          onClick={() => setCatFilter("all")}>
+          All <span className="svc-chip-count">{services.length}</span>
+        </button>
+        {presentCats.map(cat => {
+          const m = SVC_CAT_META[cat] || SVC_CAT_META.other;
+          const Icon = m.Icon;
+          return (
+            <button key={cat}
+              className={`svc-cat-chip ${catFilter === cat ? "active" : ""}`}
+              onClick={() => setCatFilter(cat)}>
+              <Icon size={11} /> {m.label} <span className="svc-chip-count">{catCounts[cat]}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* State + Severity filters + Search */}
+      <div className="svc-filter-bar">
+        <div className="cfg-sev-filters">
+          {STATE_FILTERS.map(({ id, label }) => (
+            <button key={id}
+              className={`cfg-sev-filter ${stateFilter === id ? "active" : ""}`}
+              onClick={() => setStateFilter(id)}>{label}</button>
+          ))}
+        </div>
+        <div className="cfg-sev-filters">
+          {SEV_FILTERS.map(({ id, label }) => (
+            <button key={id}
+              className={`cfg-sev-filter ${sevFilter === id ? "active" : ""}`}
+              style={sevFilter === id && id !== "all" ? { background: SEV_COLOR[id], color: "#fff" } : {}}
+              onClick={() => setSevFilter(id)}>{label}</button>
+          ))}
+        </div>
+        <input className="tl-search" placeholder="Search services…" value={search}
+          onChange={e => setSearch(e.target.value)} style={{ maxWidth: 220 }} />
+      </div>
+
+      {filtered.length === 0 ? (
+        <EmptyState icon={CheckCircle} message="No services match the current filter." />
+      ) : (
+        <div className="svc-list">
+          {filtered.map(svc => (
+            <ServiceRow key={`${svc.source}-${svc.name}`} svc={svc} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const REPORT_TABS = [
   { id: "summary",     label: "Summary",     Icon: HardDrive },
   { id: "timeline",    label: "Timeline",    Icon: Clock     },
   { id: "deleted",     label: "Deleted",     Icon: Eye       },
   { id: "persistence", label: "Persistence", Icon: Shield    },
+  { id: "config",      label: "Config",      Icon: Settings  },
+  { id: "services",    label: "Services",    Icon: Server    },
   { id: "tools",       label: "Tools",       Icon: Search    },
 ];
 
@@ -1885,6 +2301,8 @@ function ReportPanel({ report, onClear, onExport, onReanalyze, reanalyzing }) {
     timeline:    summary?.high_timeline    > 0 ? summary.high_timeline    : null,
     deleted:     summary?.high_deleted     > 0 ? summary.high_deleted     : null,
     persistence: summary?.high_persistence > 0 ? summary.high_persistence : null,
+    config:      summary?.high_config      > 0 ? summary.high_config      : null,
+    services:    summary?.high_services    > 0 ? summary.high_services    : null,
     tools:       summary?.high_risk_tools  > 0 ? summary.high_risk_tools  : null,
   };
   return (
@@ -1919,6 +2337,8 @@ function ReportPanel({ report, onClear, onExport, onReanalyze, reanalyzing }) {
         {tab === "timeline"    && <TimelineTab    events={report.timeline} />}
         {tab === "deleted"     && <DeletedTab     findings={report.deleted} />}
         {tab === "persistence" && <PersistenceTab findings={report.persistence} />}
+        {tab === "config"      && <ConfigTab      findings={report.config} />}
+        {tab === "services"    && <ServicesTab    services={report.services} />}
         {tab === "tools"       && <ToolsTab       findings={report.findings} />}
       </div>
     </div>

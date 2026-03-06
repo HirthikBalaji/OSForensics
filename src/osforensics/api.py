@@ -4,11 +4,13 @@ The endpoint /analyze accepts JSON with an `image_path` pointing to either
 an on-disk mounted directory (for development) or a disk image file (dd, etc.).
 
 Extended endpoints:
-  POST /analyze           – full analysis (tools + timeline + deleted + persistence)
+  POST /analyze           – full analysis (tools + timeline + deleted + persistence + config + services)
   POST /upload            – upload a disk image, analyse, then delete temporary file
   POST /timeline          – timeline-only scan for a given path
   POST /deleted           – deleted-file scan for a given path
   POST /persistence       – persistence-mechanism scan for a given path
+  POST /config            – configuration-file audit for a given path
+  POST /services          – service detection and enumeration for a given path
 
 Explorer endpoints (Autopsy-style navigation):
   POST /explore/tree      – static artifact category tree
@@ -33,12 +35,14 @@ from .cases import (
     add_data_source, remove_data_source,
 )
 from .classifier import classify_findings
+from .config import analyze_configs
 from .deleted import detect_deleted
 from .detector import detect_os, detect_tools
 from .explorer import ARTIFACT_TREE, browse, stat_file, read_text
 from .extractor import FilesystemAccessor
 from .persistence import detect_persistence
 from .report import build_report
+from .services import detect_services
 from .timeline import build_timeline
 
 
@@ -73,7 +77,10 @@ def _full_analysis(fs: FilesystemAccessor) -> dict:
     timeline   = build_timeline(fs)
     deleted    = detect_deleted(fs)
     persistence = detect_persistence(fs)
-    report = build_report(os_info, classified, timeline=timeline, deleted=deleted, persistence=persistence)
+    config     = analyze_configs(fs)
+    services   = detect_services(fs)
+    report = build_report(os_info, classified, timeline=timeline, deleted=deleted,
+                          persistence=persistence, config=config, services=services)
     return report.dict()
 
 
@@ -150,6 +157,32 @@ def persistence_scan(req: AnalyzeRequest):
         raise HTTPException(status_code=400, detail=str(e))
     try:
         return {"persistence": detect_persistence(fs)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
+
+
+@app.post("/config")
+def config_scan(req: AnalyzeRequest):
+    """Return configuration-file audit findings for the given path."""
+    try:
+        fs = FilesystemAccessor(req.image_path)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
+        return {"config": analyze_configs(fs)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
+
+
+@app.post("/services")
+def services_scan(req: AnalyzeRequest):
+    """Return service detection findings for the given path."""
+    try:
+        fs = FilesystemAccessor(req.image_path)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
+        return {"services": detect_services(fs)}
     except Exception as e:
         raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
 
