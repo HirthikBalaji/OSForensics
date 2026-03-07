@@ -65,3 +65,10 @@ The real package code lives under `src/osforensics/`. A lightweight shim
 remains at the top-level to help local development. You can remove the
 top-level `osforensics/` directory if you prefer, but the `src` layout is the
 recommended, professional structure for Python projects.
+
+
+## Important Commands
+```bash
+uvicorn src.osforensics.api:app --host 127.0.0.1 --port 8000 --reload
+```
+

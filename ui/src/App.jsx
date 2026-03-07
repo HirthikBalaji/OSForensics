@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
-  Search, Upload, Trash2, Settings, Microscope,
+  Search, FolderSearch, Trash2, Settings, Microscope,
   X, FolderOpen, AlertTriangle, CheckCircle, HardDrive, Activity,
   Clock, Shield, Eye, ChevronDown, ChevronRight, Hash, Terminal,
   Lock, Server, Key, Folder, FolderOpen as FolderOpenIcon, FileText,
@@ -28,12 +28,7 @@ const get = async (url) => {
 };
 
 const apiAnalyze  = (path)       => post("/analyze",        { image_path: path });
-const apiUpload   = (file) => {
-  const fd = new FormData();
-  fd.append("file", file, file.name);
-  return fetch(`${API}/upload`, { method: "POST", body: fd })
-    .then(r => r.ok ? r.json() : r.text().then(t => Promise.reject(new Error(t))));
-};
+const apiFsBrowse = (path)       => post("/fs/browse",      { path });
 const apiBrowse   = (img, path)  => post("/explore/browse", { image_path: img, path });
 const apiStat     = (img, path)  => post("/explore/stat",   { image_path: img, path });
 const apiRead     = (img, path)  => post("/explore/read",   { image_path: img, path });
@@ -124,34 +119,105 @@ function AnalyzeDialog({ onClose, onResult }) {
   );
 }
 
-function UploadDialog({ onClose, onResult }) {
-  const [file, setFile] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState(null);
-  async function run() {
-    if (!file) return;
-    setLoading(true); setErr(null);
-    try { onResult(await apiUpload(file), file.name); onClose(); }
-    catch (e) { setErr(String(e)); }
+// ─── FILE PICKER DIALOG ──────────────────────────────────────────────────────
+function FilePickerDialog({ onClose, onResult }) {
+  const [cwd,      setCwd]      = useState("/");
+  const [children, setChildren] = useState([]);
+  const [crumbs,   setCrumbs]   = useState([{ label: "/", path: "/" }]);
+  const [selected, setSelected] = useState(null);   // { path, is_dir }
+  const [loading,  setLoading]  = useState(false);
+  const [analyzing,setAnalyzing]= useState(false);
+  const [err,      setErr]      = useState(null);
+
+  const navigate = useCallback(async (path) => {
+    setLoading(true); setErr(null); setSelected(null);
+    try {
+      const data = await apiFsBrowse(path);
+      setCwd(data.path);
+      setChildren(data.children);
+      setCrumbs(data.breadcrumbs);
+    } catch (e) { setErr(String(e)); }
     finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { navigate("/"); }, [navigate]);
+
+  async function confirm() {
+    const target = selected ? selected.path : cwd;
+    setAnalyzing(true); setErr(null);
+    try {
+      onResult(await apiAnalyze(target), target);
+      onClose();
+    } catch (e) { setErr(String(e)); }
+    finally { setAnalyzing(false); }
   }
+
+  const FOLDER_CLR = "#d97706";
+  const FILE_CLR   = "#4b5563";
+
   return (
-    <Modal title="Upload Image for Analysis" onClose={onClose} width={520}>
-      <div className="dlg-field">
-        <label>Select disk image file</label>
-        <input type="file" onChange={(e) => setFile(e.target.files[0])} />
-        <div className="dlg-hint">File is uploaded, analyzed, then deleted automatically.</div>
+    <Modal title="Open — Select Image or Directory" onClose={onClose} width={700}>
+      {/* Breadcrumb */}
+      <div className="fp-crumbs">
+        {crumbs.map((c, i) => (
+          <React.Fragment key={c.path}>
+            {i > 0 && <span className="fp-crumb-sep">/</span>}
+            <button className="fp-crumb-btn" onClick={() => navigate(c.path)}>{c.label}</button>
+          </React.Fragment>
+        ))}
       </div>
-      {file && <div className="dlg-fileinfo">Selected: <strong>{file.name}</strong> ({(file.size/1024/1024).toFixed(1)} MB)</div>}
+
+      {/* File listing */}
+      <div className="fp-listing">
+        {loading && <div className="fp-loading">Loading…</div>}
+        {!loading && children.length === 0 && <div className="fp-empty">Empty directory</div>}
+        {!loading && children.map((entry) => {
+          const isSel = selected?.path === entry.path;
+          return (
+            <div
+              key={entry.path}
+              className={`fp-entry ${isSel ? "selected" : ""}`}
+              onClick={() => setSelected(entry)}
+              onDoubleClick={() => entry.is_dir ? navigate(entry.path) : null}
+            >
+              <span className="fp-entry-icon">
+                {entry.is_dir
+                  ? <FolderSearch size={15} style={{ color: FOLDER_CLR }} />
+                  : <File          size={15} style={{ color: FILE_CLR   }} />}
+              </span>
+              <span className="fp-entry-name">{entry.name}</span>
+              {!entry.is_dir && entry.size != null && (
+                <span className="fp-entry-size">{fmtSize(entry.size)}</span>
+              )}
+              {entry.is_dir && <span className="fp-entry-dir-tag">dir</span>}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Selected path bar */}
+      <div className="fp-selected-bar">
+        <span className="fp-selected-label">Selected:</span>
+        <code className="fp-selected-path">{selected ? selected.path : cwd}</code>
+      </div>
+
       {err && <div className="dlg-error">{err}</div>}
       <div className="dlg-actions">
-        <button className="btn-primary" onClick={run} disabled={loading || !file}>
-          <Upload size={14} />{loading ? "Uploading…" : "Upload & Analyze"}
+        <button className="btn-primary" onClick={confirm} disabled={analyzing}>
+          <Search size={14} />{analyzing ? "Analyzing…" : "Open & Analyze"}
         </button>
         <button className="btn-secondary" onClick={onClose}>Cancel</button>
       </div>
     </Modal>
   );
+}
+
+// tiny helper used above
+function fmtSize(n) {
+  if (n < 1024)          return `${n} B`;
+  if (n < 1024 * 1024)   return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 ** 3)     return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 ** 3).toFixed(2)} GB`;
 }
 
 function AboutDialog({ onClose }) {
@@ -188,7 +254,7 @@ function SettingsDialog({ onClose }) {
 function ShortcutsDialog({ onClose }) {
   const shortcuts = [
     ["Ctrl + O", "Open Analyze dialog"],
-    ["Ctrl + U", "Open Upload dialog"],
+    ["Ctrl + B", "Browse & Open file picker"],
     ["Ctrl + ,", "Preferences"],
     ["F1",       "Help / About"],
     ["Escape",   "Close current dialog"],
@@ -216,8 +282,8 @@ function MenuBar({ onAction }) {
 
   const menus = {
     File: [
-      { label: "Analyze Image / Mountpoint…", key: "analyze", shortcut: "Ctrl+O" },
-      { label: "Upload Image for Analysis…",  key: "upload",  shortcut: "Ctrl+U" },
+      { label: "Analyze Image / Mountpoint…", key: "analyze",  shortcut: "Ctrl+O" },
+      { label: "Browse & Open…",               key: "filepick", shortcut: "Ctrl+B" },
       { type: "sep" },
       { label: "Export Report JSON…",         key: "export" },
       { type: "sep" },
@@ -232,7 +298,7 @@ function MenuBar({ onAction }) {
     ],
     Tools: [
       { label: "Analyze Image / Mountpoint…", key: "analyze" },
-      { label: "Upload Image for Analysis…",  key: "upload" },
+      { label: "Browse & Open…",               key: "filepick" },
       { type: "sep" },
       { label: "Keyboard Shortcuts…",         key: "shortcuts" },
     ],
@@ -274,8 +340,8 @@ function MenuBar({ onAction }) {
 function Toolbar({ visible, onAction }) {
   if (!visible) return null;
   const btns = [
-    { Icon: Search,         label: "Analyze",  key: "analyze",        title: "Analyze (Ctrl+O)" },
-    { Icon: Upload,         label: "Upload",   key: "upload",         title: "Upload (Ctrl+U)" },
+    { Icon: Search,         label: "Analyze",  key: "analyze",        title: "Analyze path (Ctrl+O)" },
+    { Icon: FolderSearch,   label: "Browse",   key: "filepick",       title: "Browse & Open (Ctrl+B)" },
     { type: "sep" },
     { Icon: LayoutPanelLeft,label: "Explorer", key: "view_explorer",  title: "Explorer view" },
     { Icon: BarChart2,      label: "Report",   key: "view_report",    title: "Report view" },
@@ -942,10 +1008,10 @@ function WorkspaceHome({ onAction }) {
           <span className="qa-label">Analyze Image</span>
           <span className="qa-hint">Ctrl+O</span>
         </button>
-        <button className="qa-btn" onClick={() => onAction("upload")}>
-          <span className="qa-icon"><Upload size={28} strokeWidth={1.5} /></span>
-          <span className="qa-label">Upload Image</span>
-          <span className="qa-hint">Ctrl+U</span>
+        <button className="qa-btn" onClick={() => onAction("filepick")}>
+          <span className="qa-icon"><FolderSearch size={28} strokeWidth={1.5} /></span>
+          <span className="qa-label">Browse & Open</span>
+          <span className="qa-hint">Ctrl+B</span>
         </button>
       </div>
       <p className="ws-tip">Use the <kbd>File</kbd> menu or toolbar to begin. Press <kbd>F1</kbd> for help.</p>
@@ -1014,7 +1080,7 @@ export default function App() {
   function handleAction(key) {
     switch (key) {
       case "analyze":      return setDialog("analyze");
-      case "upload":       return setDialog("upload");
+      case "filepick":     return setDialog("filepick");
       case "export":       return report ? downloadJSON(report) : setStatus("No report to export");
       case "clear":        setReport(null); setImgPath(null); setView("home"); return setStatus("Analysis cleared");
       case "settings":     return setDialog("settings");
@@ -1034,7 +1100,7 @@ export default function App() {
   useEffect(() => {
     function onKey(e) {
       if (e.ctrlKey && e.key === "o") { e.preventDefault(); handleAction("analyze"); }
-      if (e.ctrlKey && e.key === "u") { e.preventDefault(); handleAction("upload"); }
+      if (e.ctrlKey && e.key === "b") { e.preventDefault(); handleAction("filepick"); }
       if (e.ctrlKey && e.key === ",") { e.preventDefault(); handleAction("settings"); }
       if (e.key === "F1")             { e.preventDefault(); handleAction("about"); }
     }
@@ -1081,7 +1147,7 @@ export default function App() {
       <StatusBar visible={statbar} status={status} report={report} />
 
       {dialog === "analyze"   && <AnalyzeDialog   onClose={closeDialog} onResult={handleResult} />}
-      {dialog === "upload"    && <UploadDialog    onClose={closeDialog} onResult={handleResult} />}
+      {dialog === "filepick"  && <FilePickerDialog onClose={closeDialog} onResult={handleResult} />}
       {dialog === "settings"  && <SettingsDialog  onClose={closeDialog} />}
       {dialog === "shortcuts" && <ShortcutsDialog onClose={closeDialog} />}
       {dialog === "about"     && <AboutDialog     onClose={closeDialog} />}

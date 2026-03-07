@@ -1391,3 +1391,89 @@ kbd {
   padding: 16px 16px 32px;
 }
 
+/* ── File Picker Dialog ────────────────────────────────────────────────────── */
+.fp-crumbs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 6px 10px;
+  background: #f3f4f8;
+  border: 1px solid var(--border-lt);
+  border-radius: var(--radius);
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+.fp-crumb-sep { color: var(--fg-muted); padding: 0 2px; }
+.fp-crumb-btn {
+  background: none;
+  border: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.fp-crumb-btn:hover { background: #dbeafe; text-decoration: underline; }
+
+.fp-listing {
+  height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #fff;
+  margin-bottom: 10px;
+}
+.fp-loading, .fp-empty {
+  padding: 20px;
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+.fp-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border-lt);
+  font-size: 13px;
+  user-select: none;
+}
+.fp-entry:last-child { border-bottom: none; }
+.fp-entry:hover   { background: #f0f5ff; }
+.fp-entry.selected { background: #dbeafe; border-color: #93c5fd; }
+.fp-entry-icon  { display: flex; align-items: center; flex-shrink: 0; }
+.fp-entry-name  { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fp-entry-size  { font-size: 11px; color: var(--fg-muted); font-family: monospace; flex-shrink: 0; }
+.fp-entry-dir-tag {
+  font-size: 10px;
+  font-weight: 700;
+  color: #d97706;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 3px;
+  padding: 1px 5px;
+  flex-shrink: 0;
+}
+
+.fp-selected-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: #f8f9fc;
+  border: 1px solid var(--border-lt);
+  border-radius: var(--radius);
+  margin-bottom: 12px;
+  font-size: 12px;
+}
+.fp-selected-label { color: var(--fg-muted); font-weight: 600; white-space: nowrap; }
+.fp-selected-path {
+  font-family: monospace;
+  font-size: 11px;
+  color: var(--fg);
+  word-break: break-all;
+}
+

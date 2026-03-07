@@ -195,3 +195,51 @@ def explore_read(req: ExploreRequest):
         return read_text(fs, req.path, limit=req.limit or 200_000)
     except Exception as e:
         raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
+
+
+# ── Host filesystem browser (for the file-picker dialog) ─────────────────────
+
+class FsBrowseRequest(BaseModel):
+    path: str = "/"
+
+
+@app.post("/fs/browse")
+def fs_browse(req: FsBrowseRequest):
+    """List the host filesystem directory for the GUI file-picker.
+
+    Returns the normalized path and a list of children:
+      { name, path, is_dir, size, mtime }
+    Silently skips entries that cannot be stat'd.
+    """
+    import stat as _stat
+    path = os.path.normpath(req.path or "/")
+    if not os.path.isdir(path):
+        raise HTTPException(status_code=400, detail=f"Not a directory: {path}")
+    try:
+        raw = os.listdir(path)
+    except PermissionError:
+        raise HTTPException(status_code=403, detail=f"Permission denied: {path}")
+
+    children = []
+    for name in sorted(raw, key=lambda n: (not os.path.isdir(os.path.join(path, n)), n.lower())):
+        full = os.path.join(path, name)
+        try:
+            st = os.lstat(full)
+            is_dir = _stat.S_ISDIR(st.st_mode)
+            children.append({
+                "name":   name,
+                "path":   full,
+                "is_dir": is_dir,
+                "size":   st.st_size if not is_dir else None,
+                "mtime":  st.st_mtime,
+            })
+        except OSError:
+            pass
+
+    # Build breadcrumb from the current path
+    parts = [p for p in path.split("/") if p]
+    crumbs = [{"label": "/", "path": "/"}]
+    for i, part in enumerate(parts):
+        crumbs.append({"label": part, "path": "/" + "/".join(parts[:i + 1])})
+
+    return {"path": path, "children": children, "breadcrumbs": crumbs}
