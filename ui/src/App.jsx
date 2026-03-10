@@ -44,6 +44,9 @@ const apiCaseGet     = (id)              => get(`/cases/${id}`);
 const apiCaseDelete  = (id)              => fetch(`${API}/cases/${id}`, { method: "DELETE" }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); });
 const apiCaseAnalyze = (caseId, imgPath) => post(`/cases/${caseId}/analyze`, { image_path: imgPath });
 const apiCaseDelSrc  = (caseId, srcId)   => fetch(`${API}/cases/${caseId}/sources/${srcId}`, { method: "DELETE" }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); });
+const apiRecover     = (img, recoveryId) => post("/deleted/recover", { image_path: img, recovery_id: recoveryId });
+const apiCarveGroups = ()                => get("/deleted/carve/groups");
+const apiCarve       = (img, opts)       => post("/deleted/carve", { image_path: img, ...opts });
 
 // ── Agent API ─────────────────────────────────────────────────────────────────
 const apiAgentStatus  = ()    => get("/agent/status");
@@ -942,7 +945,13 @@ function Explorer({ imgPath }) {
 const SRC_ICON = { bash_history: Terminal, "auth.log": Lock, secure: Lock, syslog: Server, messages: Server, inode: Hash };
 const PERSIST_ICONS  = { crontab: Clock, systemd_service: Server, shell_startup: Terminal, ssh_authorized_keys: Key };
 const PERSIST_LABELS = { crontab: "Suspicious Crontab Entries", systemd_service: "Unknown Systemd Services", shell_startup: "Shell Startup Modifications", ssh_authorized_keys: "SSH Authorized Keys" };
-const DEL_TYPE_LABELS = { deleted_inode: "Deleted Inodes (TSK)", missing_expected: "Missing Expected Files", scan_error: "Scan Errors" };
+const DEL_TYPE_META = {
+  deleted_inode:  { label: "Deleted Inodes (TSK)",         Icon: Trash2,        color: "#dc2626", desc: "Files whose directory entry survives in the inode table but are flagged as unallocated." },
+  trash:          { label: "Trash / Recycle Bin",          Icon: FolderOpenIcon, color: "#d97706", desc: "Files moved to the freedesktop Trash. Immediately recoverable." },
+  open_deleted:   { label: "Deleted-but-Open",             Icon: Eye,           color: "#7c3aed", desc: "Files unlinked from disk but still held open by a running process." },
+  anti_forensics: { label: "Anti-Forensics Indicators",    Icon: AlertTriangle, color: "#b45309", desc: "Evidence of intentional evidence destruction (rm, shred, wipe, etc.)." },
+  scan_error:     { label: "Scan Errors",                  Icon: Info,          color: "#6b7280", desc: "" },
+};
 
 function EmptyState({ icon: Icon, message }) {
   return <div className="empty-state"><Icon size={36} strokeWidth={1.2} className="empty-icon" /><p>{message}</p></div>;
@@ -1863,25 +1872,377 @@ function TimelineTab({ events = [] }) {
   );
 }
 
-function DeletedTab({ findings = [] }) {
-  if (findings.length === 0) return <EmptyState icon={Eye} message="No deleted or missing files detected." />;
-  const byType = findings.reduce((acc, f) => { const k = f.type || "other"; if (!acc[k]) acc[k] = []; acc[k].push(f); return acc; }, {});
+function fmtBytes(n) {
+  if (n == null || n <= 0) return null;
+  if (n < 1024)        return `${n} B`;
+  if (n < 1048576)     return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1073741824)  return `${(n / 1048576).toFixed(1)} MB`;
+  return `${(n / 1073741824).toFixed(1)} GB`;
+}
+
+function RecoverButton({ finding, imgPath }) {
+  const [status, setStatus] = useState("idle");   // idle | busy | ok | err
+  const [result, setResult] = useState(null);
+
+  const run = async () => {
+    setStatus("busy");
+    try {
+      const r = await apiRecover(imgPath, finding.recovery_id);
+      if (r.success) { setStatus("ok");  setResult(r); }
+      else           { setStatus("err"); setResult(r); }
+    } catch (e) {
+      setStatus("err");
+      setResult({ error: e.message });
+    }
+  };
+
+  if (status === "ok") return (
+    <span className="del-rec-ok">
+      <CheckCircle size={11} /> Saved to <code className="del-rec-path">{result.path}</code>
+      {result.size > 0 && <span> ({fmtBytes(result.size)})</span>}
+    </span>
+  );
+  if (status === "err") return (
+    <span className="del-rec-err">
+      <AlertTriangle size={11} /> {result?.error || "failed"}
+      <button className="del-rec-btn" onClick={run}>Retry</button>
+    </span>
+  );
+  return (
+    <button className={`del-rec-btn${status === "busy" ? " busy" : ""}`} onClick={run} disabled={status === "busy"}>
+      {status === "busy" ? <RefreshCw size={11} className="spin" /> : <FolderOpen size={11} />}
+      {status === "busy" ? "Recovering…" : "Recover"}
+    </button>
+  );
+}
+
+function DelRow({ f, imgPath }) {
+  const [open, setOpen] = useState(false);
+  const { color } = DEL_TYPE_META[f.type] || { color: "#6b7280" };
+  const sev = f.severity || "medium";
+  return (
+    <div className="del-row del-row2" style={{ borderLeft: `3px solid ${SEV_COLOR[sev] || "#6b7280"}` }}>
+      <div className="del-row2-top" onClick={() => setOpen(x => !x)}>
+        <span className="del-row2-toggle">{open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</span>
+        <code className="del-path">{f.path}</code>
+        <div className="del-row2-meta">
+          {f.size != null && <span className="del-chip del-size">{fmtBytes(f.size)}</span>}
+          {f.inode   != null && <span className="del-chip del-inode">ino:{f.inode}</span>}
+          {f.deleted_at      && <span className="del-chip del-ts">{f.deleted_at}</span>}
+          <SevBadge sev={sev} />
+          {f.recoverable && imgPath
+            ? <RecoverButton finding={f} imgPath={imgPath} />
+            : f.recoverable
+              ? <span className="del-chip del-recoverable"><CheckCircle size={10} /> Recoverable</span>
+              : null
+          }
+        </div>
+      </div>
+      {open && (
+        <div className="del-row2-body">
+          <p className="del-detail">{f.detail}</p>
+          {f.recovery_hint && (
+            <p className="del-hint"><CheckCircle size={11} style={{ color: "#16a34a" }} /> {f.recovery_hint}</p>
+          )}
+          {f.command && <pre className="del-command">{f.command}</pre>}
+          {(f.mtime || f.atime || f.ctime) && (
+            <div className="del-times">
+              {f.mtime && <span><strong>Modified:</strong> {f.mtime}</span>}
+              {f.atime && <span><strong>Accessed:</strong> {f.atime}</span>}
+              {f.ctime && <span><strong>Created:</strong> {f.ctime}</span>}
+            </div>
+          )}
+          {f.user && <p className="del-user">User: <strong>{f.user}</strong></p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── File Carving Panel ────────────────────────────────────────────────────────
+
+const CARVE_GROUP_ICONS = {
+  image:      HardDrive,
+  document:   FileText,
+  executable: Terminal,
+  database:   Database,
+  archive:    Package,
+  email:      BookOpen,
+  video:      Activity,
+  audio:      Activity,
+  text:       Code,
+};
+
+function CarvingPanel({ imgPath }) {
+  const [groups,     setGroups]     = useState(null);    // {id: label} map from API
+  const [selected,   setSelected]   = useState([]);       // group keys chosen by user
+  const [maxFiles,   setMaxFiles]   = useState(200);
+  const [maxScanGb,  setMaxScanGb]  = useState(2);
+  const [outDir,     setOutDir]     = useState("");
+  const [status,     setStatus]     = useState("idle");   // idle|loading-groups|carving|done|err
+  const [results,    setResults]    = useState(null);
+  const [error,      setError]      = useState("");
+
+  // Load group list once
+  useEffect(() => {
+    setStatus("loading-groups");
+    apiCarveGroups()
+      .then(r => { setGroups(r.groups); setSelected(Object.keys(r.groups)); setStatus("idle"); })
+      .catch(() => { setGroups({}); setStatus("idle"); });
+  }, []);
+
+  const toggleGroup = (k) =>
+    setSelected(s => s.includes(k) ? s.filter(x => x !== k) : [...s, k]);
+
+  const startCarving = async () => {
+    setStatus("carving");
+    setResults(null);
+    setError("");
+    try {
+      const r = await apiCarve(imgPath, {
+        sig_groups: selected.length ? selected : null,
+        max_files: Math.max(1, Math.min(500, maxFiles)),
+        max_scan_gb: Math.max(0.1, Math.min(50, maxScanGb)),
+        output_dir: outDir.trim() || undefined,
+      });
+      setResults(r);
+      setStatus("done");
+    } catch (e) {
+      setError(e.message || "Carving failed");
+      setStatus("err");
+    }
+  };
+
+  const carved = results?.carved?.filter(f => f.type === "carved") ?? [];
+  const info   = results?.carved?.filter(f => f.type !== "carved") ?? [];
+
+  return (
+    <div className="carve-panel">
+      <div className="carve-panel-header">
+        <HardDrive size={14} style={{ color: "#7c3aed" }} />
+        <span className="carve-title">File Carving</span>
+        <span className="carve-subtitle">
+          Scan raw disk sectors for file signatures — recovers deleted files even when
+          all inode/directory metadata is wiped.
+        </span>
+        <span className="carve-badge">TSK image only</span>
+      </div>
+
+      {status !== "carving" && status !== "done" && (
+        <div className="carve-config">
+          {/* Signature group selector */}
+          <div className="carve-section-label">File types to carve:</div>
+          <div className="carve-groups">
+            {groups === null && <span className="carve-loading">Loading signatures…</span>}
+            {groups && Object.entries(groups).map(([k, label]) => {
+              const Icon = CARVE_GROUP_ICONS[k] || File;
+              const active = selected.includes(k);
+              return (
+                <button key={k} className={`carve-group-btn${active ? " active" : ""}`}
+                  onClick={() => toggleGroup(k)}>
+                  <Icon size={11} />{label}
+                  {active && <CheckCircle size={10} className="carve-check" />}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Numeric options */}
+          <div className="carve-opts">
+            <label className="carve-opt-lbl">
+              Max carved files
+              <input type="number" className="carve-num" value={maxFiles} min={1} max={500}
+                onChange={e => setMaxFiles(Number(e.target.value))} />
+            </label>
+            <label className="carve-opt-lbl">
+              Scan limit (GB)
+              <input type="number" className="carve-num" value={maxScanGb} min={0.1} max={50} step={0.5}
+                onChange={e => setMaxScanGb(Number(e.target.value))} />
+            </label>
+            <label className="carve-opt-lbl" style={{ flex: 2 }}>
+              Output directory <span className="carve-opt-hint">(leave blank for default /tmp/osforensics_recovery/carved)</span>
+              <input className="carve-path-inp" placeholder="/path/to/output/dir"
+                value={outDir} onChange={e => setOutDir(e.target.value)} />
+            </label>
+          </div>
+
+          <button className="carve-start-btn" disabled={!groups || selected.length === 0} onClick={startCarving}>
+            <HardDrive size={13} /> Start Carving
+          </button>
+        </div>
+      )}
+
+      {status === "carving" && (
+        <div className="carve-progress">
+          <RefreshCw size={20} className="spin" style={{ color: "#7c3aed" }} />
+          <span>Scanning image for file signatures…  This may take several minutes for large images.</span>
+        </div>
+      )}
+
+      {status === "err" && (
+        <div className="carve-err">
+          <AlertTriangle size={14} /> {error}
+          <button className="del-rec-btn" style={{ marginLeft: 10 }} onClick={() => setStatus("idle")}>Try again</button>
+        </div>
+      )}
+
+      {status === "done" && (
+        <div className="carve-results">
+          <div className="carve-results-header">
+            <CheckCircle size={13} style={{ color: "#16a34a" }} />
+            <strong>{carved.length} file{carved.length !== 1 ? "s" : ""} carved</strong>
+            {results?.output_dir && (
+              <span className="carve-outdir">→ <code>{results.output_dir}</code></span>
+            )}
+            <button className="del-rec-btn" style={{ marginLeft: "auto" }}
+              onClick={() => { setStatus("idle"); setResults(null); }}>
+              Carve Again
+            </button>
+          </div>
+
+          {/* Info / warning messages */}
+          {info.map((f, i) => (
+            <div key={i} className="carve-info-row">
+              <Info size={11} style={{ flexShrink: 0 }} /> {f.detail}
+            </div>
+          ))}
+
+          {/* Carved files table */}
+          {carved.length > 0 && (
+            <table className="carve-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Type / Offset</th>
+                  <th>Size</th>
+                  <th>Saved As</th>
+                </tr>
+              </thead>
+              <tbody>
+                {carved.map((f, i) => {
+                  const offset = f.inode != null ? `0x${f.inode.toString(16).padStart(8,"0")}` : "—";
+                  const fname = f.path.split("/").pop();
+                  return (
+                    <tr key={i}>
+                      <td className="carve-td-num">{i + 1}</td>
+                      <td>
+                        <div className="carve-type-cell">
+                          <span className="carve-type-badge">{fname.split("_")[1]?.toUpperCase() || "?"}</span>
+                          <code className="carve-offset">{offset}</code>
+                        </div>
+                      </td>
+                      <td className="carve-td-size">{fmtBytes(f.size) || "—"}</td>
+                      <td><code className="del-path" style={{ fontSize: 10 }}>{f.path}</code></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DeletedTab({ findings = [], imgPath }) {
+  const [search,      setSearch]      = useState("");
+  const [filterSev,   setFilterSev]   = useState("all");
+  const [filterType,  setFilterType]  = useState("all");
+  const [recOnly,     setRecOnly]     = useState(false);
+
+  // Determine if we have a disk image (not live root) — carving only makes sense then
+  const isImage = imgPath && imgPath !== "/" && !imgPath.endsWith("/");
+
+  const types = [...new Set(findings.map(f => f.type))];
+  const filtered = findings.filter(f => {
+    if (filterSev  !== "all" && f.severity !== filterSev)  return false;
+    if (filterType !== "all" && f.type     !== filterType)  return false;
+    if (recOnly && !f.recoverable)                          return false;
+    if (search) {
+      const q = search.toLowerCase();
+      return (f.path?.toLowerCase().includes(q) ||
+              f.detail?.toLowerCase().includes(q) ||
+              f.command?.toLowerCase().includes(q));
+    }
+    return true;
+  });
+
+  const byType = filtered.reduce((acc, f) => {
+    const k = f.type || "other";
+    if (!acc[k]) acc[k] = [];
+    acc[k].push(f);
+    return acc;
+  }, {});
+
+  const nRecoverable = findings.filter(f => f.recoverable).length;
+  const nHigh        = findings.filter(f => f.severity === "high").length;
+
   return (
     <div className="tab-content">
-      {Object.entries(byType).map(([type, items]) => (
-        <div key={type} className="del-group">
-          <div className="del-group-header"><Eye size={13} /><span>{DEL_TYPE_LABELS[type] || type}</span><span className="del-count">{items.length}</span></div>
-          <div className="del-list">
-            {items.map((f, i) => (
-              <div key={i} className="del-row" style={{ borderLeft: `3px solid ${SEV_COLOR[f.severity] || "#6b7280"}` }}>
-                <code className="del-path">{f.path}</code>
-                <div className="del-detail">{f.detail}</div>
-                <SevBadge sev={f.severity} />
-              </div>
-            ))}
+      {findings.length === 0 ? (
+        <EmptyState icon={Eye} message="No deleted files or anti-forensics indicators found." />
+      ) : (
+        <>
+          {/* Summary bar */}
+          <div className="del-summary-bar">
+            <span className="del-sum-chip neutral"><Eye size={11} /> {findings.length} findings</span>
+            <span className="del-sum-chip green"><CheckCircle size={11} /> {nRecoverable} recoverable</span>
+            <span className="del-sum-chip red"><AlertTriangle size={11} /> {nHigh} high severity</span>
           </div>
-        </div>
-      ))}
+
+          {/* Filter bar */}
+          <div className="del-filter-bar">
+            <div className="del-search-wrap">
+              <Search size={12} className="del-search-icon" />
+              <input className="del-search" placeholder="Search path, detail or command…"
+                value={search} onChange={e => setSearch(e.target.value)} />
+            </div>
+            <select className="del-select" value={filterSev} onChange={e => setFilterSev(e.target.value)}>
+              <option value="all">All Severities</option>
+              <option value="high">High</option>
+              <option value="medium">Medium</option>
+              <option value="info">Info</option>
+            </select>
+            <select className="del-select" value={filterType} onChange={e => setFilterType(e.target.value)}>
+              <option value="all">All Types</option>
+              {types.map(t => <option key={t} value={t}>{DEL_TYPE_META[t]?.label || t}</option>)}
+            </select>
+            <label className="del-toggle-lbl">
+              <input type="checkbox" checked={recOnly} onChange={e => setRecOnly(e.target.checked)} />
+              Recoverable only
+            </label>
+          </div>
+
+          {filtered.length === 0 && (
+            <div className="empty-state" style={{ padding: "40px 20px" }}>
+              <Search size={28} style={{ color: "var(--fg-muted)", marginBottom: 8 }} />
+              <p>No results match the current filter.</p>
+            </div>
+          )}
+
+          {Object.entries(byType).map(([type, items]) => {
+            const m = DEL_TYPE_META[type] || { label: type, Icon: Eye, color: "#6b7280", desc: "" };
+            const TypeIcon = m.Icon;
+            return (
+              <div key={type} className="del-group" style={{ borderTop: `3px solid ${m.color}` }}>
+                <div className="del-group-header">
+                  <TypeIcon size={13} style={{ color: m.color }} />
+                  <span>{m.label}</span>
+                  <span className="del-count">{items.length}</span>
+                  {m.desc && <span className="del-group-desc">{m.desc}</span>}
+                </div>
+                <div className="del-list">
+                  {items.map((f, i) => <DelRow key={i} f={f} imgPath={imgPath} />)}
+                </div>
+              </div>
+            );
+          })}
+        </>
+      )}
+
+      {/* File Carving section — always shown when we have a disk image */}
+      {isImage && <CarvingPanel imgPath={imgPath} />}
     </div>
   );
 }
@@ -2730,7 +3091,7 @@ const REPORT_TABS = [
   { id: "tools",       label: "Tools",       Icon: Search    },
 ];
 
-function ReportPanel({ report, liveInfo, onClear, onExport, onReanalyze, reanalyzing }) {
+function ReportPanel({ report, liveInfo, imgPath, onClear, onExport, onReanalyze, reanalyzing }) {
   const [tab, setTab] = useState("summary");
   const { summary } = report;
   const isLive = !!liveInfo;
@@ -2774,7 +3135,7 @@ function ReportPanel({ report, liveInfo, onClear, onExport, onReanalyze, reanaly
       <div className="report-panel-body">
         {tab === "summary"     && <SummaryTab     report={report} liveInfo={liveInfo} />}
         {tab === "timeline"    && <TimelineTab    events={report.timeline} />}
-        {tab === "deleted"     && <DeletedTab     findings={report.deleted} />}
+        {tab === "deleted"     && <DeletedTab     findings={report.deleted} imgPath={imgPath} />}
         {tab === "persistence" && <PersistenceTab findings={report.persistence} />}
         {tab === "config"      && <ConfigTab      findings={report.config} />}
         {tab === "services"    && <ServicesTab    services={report.services} />}
@@ -3662,6 +4023,7 @@ export default function App() {
             <ReportPanel
               report={report}
               liveInfo={imgPath === "/" ? liveInfo : null}
+              imgPath={imgPath}
               onClear={() => handleAction("clear")}
               onExport={() => downloadJSON(report)}
               onReanalyze={handleReanalyze}
