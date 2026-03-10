@@ -4,7 +4,7 @@ The endpoint /analyze accepts JSON with an `image_path` pointing to either
 an on-disk mounted directory (for development) or a disk image file (dd, etc.).
 
 Extended endpoints:
-  POST /analyze           – full analysis (tools + timeline + deleted + persistence + config + services + browsers)
+  POST /analyze           – full analysis (tools + timeline + deleted + persistence + config + services + browsers + multimedia)
   POST /upload            – upload a disk image, analyse, then delete temporary file
   POST /timeline          – timeline-only scan for a given path
   POST /deleted           – deleted-file scan for a given path
@@ -14,6 +14,7 @@ Extended endpoints:
   POST /config            – configuration-file audit for a given path
   POST /services          – service detection and enumeration for a given path
   POST /browsers          – browser forensics (history, bookmarks, cookies, extensions …)
+  POST /multimedia        – multimedia forensics (EXIF, GPS, steganography, tampering …)
 
 Explorer endpoints (Autopsy-style navigation):
   POST /explore/tree      – static artifact category tree
@@ -44,6 +45,7 @@ from .deleted import detect_deleted, recover_file, carve_files, CARVE_GROUPS, SA
 from .detector import detect_os, detect_tools
 from .explorer import ARTIFACT_TREE, browse, stat_file, read_text
 from .extractor import FilesystemAccessor
+from .multimedia import analyze_multimedia
 from .persistence import detect_persistence
 from .report import build_report
 from .services import detect_services
@@ -98,9 +100,10 @@ def _full_analysis(fs: FilesystemAccessor) -> dict:
     config     = analyze_configs(fs)
     services   = detect_services(fs)
     browsers   = detect_browsers(fs)
+    multimedia = analyze_multimedia(fs)
     report = build_report(os_info, classified, timeline=timeline, deleted=deleted,
                           persistence=persistence, config=config, services=services,
-                          browsers=browsers)
+                          browsers=browsers, multimedia=multimedia)
     return report.dict()
 
 
@@ -286,6 +289,19 @@ def browser_scan(req: AnalyzeRequest):
         raise HTTPException(status_code=400, detail=str(e))
     try:
         return {"browsers": detect_browsers(fs)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
+
+
+@app.post("/multimedia")
+def multimedia_scan(req: AnalyzeRequest):
+    """Return multimedia forensics findings (EXIF, GPS, steganography indicators, tampering …)."""
+    try:
+        fs = FilesystemAccessor(req.image_path)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
+        return {"multimedia": analyze_multimedia(fs)}
     except Exception as e:
         raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
 
