@@ -30,7 +30,7 @@ const get = async (url) => {
 };
 
 const apiAnalyze     = (path)       => post("/analyze",        { image_path: path });
-const apiAnalyzeLive = ()            => post("/analyze/live",  {});
+const apiAnalyzeLive = (scanTypes)   => post("/analyze/live",  scanTypes || {});
 const apiLiveInfo    = ()            => get("/live/info");
 const apiFsBrowse    = (path)        => post("/fs/browse",      { path });
 const apiBrowse      = (img, path)   => post("/explore/browse", { image_path: img, path });
@@ -134,6 +134,76 @@ function AnalyzeDialog({ onClose, onResult }) {
       <div className="dlg-actions">
         <button className="btn-primary" onClick={run} disabled={loading || !path.trim()}>
           <Search size={14} />{loading ? "Analyzing…" : "Analyze"}
+        </button>
+        <button className="btn-secondary" onClick={onClose}>Cancel</button>
+      </div>
+    </Modal>
+  );
+}
+
+// ─── LIVE SCAN DIALOG ───────────────────────────────────────────────────────
+const SCAN_TYPES = [
+  { key: "timeline",    label: "Timeline",         hint: "File access / modification events",           default: true  },
+  { key: "deleted",     label: "Deleted Files",     hint: "Recoverable deleted file detection",           default: true  },
+  { key: "persistence", label: "Persistence",       hint: "Cron, systemd, rc files, SUID, keys",          default: true  },
+  { key: "services",    label: "Services",          hint: "Installed daemons and service units",          default: true  },
+  { key: "config",      label: "Config Audit",      hint: "Security-relevant config file analysis",       default: false },
+  { key: "browsers",    label: "Browser Artifacts", hint: "History, cookies, extensions",                 default: false },
+  { key: "multimedia",  label: "Multimedia",        hint: "Image / video / audio metadata (slow)",        default: false },
+];
+
+function LiveScanDialog({ onClose, onResult }) {
+  const defaults = Object.fromEntries(SCAN_TYPES.map(t => [t.key, t.default]));
+  const [types,   setTypes]   = useState(defaults);
+  const [loading, setLoading] = useState(false);
+  const [err,     setErr]     = useState(null);
+
+  const toggle = (key) => setTypes(prev => ({ ...prev, [key]: !prev[key] }));
+  const anyOn  = Object.values(types).some(Boolean);
+
+  async function run() {
+    setLoading(true); setErr(null);
+    try {
+      const [info, r] = await Promise.all([apiLiveInfo(), apiAnalyzeLive(types)]);
+      onResult(r, "/", info);
+      onClose();
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <Modal title="Scan Live System" onClose={onClose} width={440}>
+      <div className="lsd-body">
+        <p className="lsd-intro">
+          <Cpu size={13} /> Scanning <strong>/</strong> — select which analysis modules to run:
+        </p>
+        <div className="lsd-checks">
+          {SCAN_TYPES.map(({ key, label, hint }) => (
+            <label key={key} className="lsd-check">
+              <input type="checkbox" checked={!!types[key]} onChange={() => toggle(key)} />
+              <span className="lsd-check-info">
+                <span className="lsd-check-label">{label}</span>
+                <span className="lsd-check-hint">{hint}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+        <div className="lsd-select-row">
+          <button className="lsd-sel-btn" onClick={() => setTypes(Object.fromEntries(SCAN_TYPES.map(t => [t.key, true])))}>
+            Select all
+          </button>
+          <button className="lsd-sel-btn" onClick={() => setTypes(Object.fromEntries(SCAN_TYPES.map(t => [t.key, false])))}>
+            Deselect all
+          </button>
+        </div>
+      </div>
+      {err && <div className="dlg-error">{err}</div>}
+      <div className="dlg-actions">
+        <button className="btn-primary" onClick={run} disabled={loading || !anyOn}>
+          <Cpu size={14} />{loading ? "Scanning…" : "Start Scan"}
         </button>
         <button className="btn-secondary" onClick={onClose}>Cancel</button>
       </div>
@@ -4247,16 +4317,18 @@ export default function App() {
     }
   }
 
-  async function handleLiveScan() {
-    if (liveScanning) return;
+  async function handleLiveScan(scanTypes, info) {
+    setLiveInfo(info || null);
     setLiveScanning(true);
     setStatus("Scanning live system…");
     try {
-      const [info, r] = await Promise.all([apiLiveInfo(), apiAnalyzeLive()]);
-      setLiveInfo(info);
+      const [info2, r] = liveInfo
+        ? [liveInfo, await apiAnalyzeLive()]
+        : await Promise.all([apiLiveInfo(), apiAnalyzeLive()]);
+      setLiveInfo(info2);
       handleResult(r, "/");
       const hi = r.summary?.total_high ?? 0;
-      setStatus(`Live scan complete (${info.hostname}) — ${hi} high-severity indicator${hi !== 1 ? "s" : ""}`);
+      setStatus(`Live scan complete (${info2.hostname}) — ${hi} high-severity indicator${hi !== 1 ? "s" : ""}`);
     } catch (e) {
       setStatus(`Live scan failed: ${e.message}`);
     } finally {
@@ -4291,7 +4363,7 @@ export default function App() {
     switch (key) {
       case "analyze":       return setDialog("analyze");
       case "filepick":      return setDialog("filepick");
-      case "live_scan":     return handleLiveScan();
+      case "live_scan":     return setDialog("live_scan");
       case "new_case":      return setDialog("new_case");
       case "view_cases":    return setView("cases");
       case "export":        return report ? downloadJSON(report) : setStatus("No report to export");
@@ -4402,6 +4474,12 @@ export default function App() {
 
       {dialog === "analyze"    && <AnalyzeDialog    onClose={closeDialog} onResult={handleResult} />}
       {dialog === "filepick"   && <FilePickerDialog  onClose={closeDialog} onResult={handleResult} />}
+      {dialog === "live_scan"  && (
+        <LiveScanDialog
+          onClose={closeDialog}
+          onResult={(r, path, info) => { handleResult(r, path); setLiveInfo(info); closeDialog(); }}
+        />
+      )}
       {dialog === "new_case"   && (
         <NewCaseDialog
           onClose={closeDialog}

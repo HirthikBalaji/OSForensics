@@ -452,15 +452,40 @@ def live_info():
     }
 
 
+class LiveScanRequest(BaseModel):
+    timeline:    bool = True
+    deleted:     bool = True
+    persistence: bool = True
+    config:      bool = True
+    services:    bool = True
+    browsers:    bool = True
+    multimedia:  bool = False
+
+
 @app.post("/analyze/live")
-def analyze_live():
-    """Full forensic analysis of the running host system (uses '/' as root)."""
+def analyze_live(req: LiveScanRequest = None):
+    """Forensic analysis of the running host system. Accepts optional scan-type flags."""
+    if req is None:
+        req = LiveScanRequest()
     try:
         fs = FilesystemAccessor("/")
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     try:
-        return _full_analysis(fs)
+        os_info    = detect_os(fs)
+        findings   = detect_tools(fs)
+        classified = classify_findings(findings)
+        timeline    = build_timeline(fs)       if req.timeline    else []
+        deleted     = detect_deleted(fs)       if req.deleted     else []
+        persistence = detect_persistence(fs)   if req.persistence else []
+        config      = analyze_configs(fs)      if req.config      else []
+        services    = detect_services(fs)      if req.services    else []
+        browsers    = detect_browsers(fs)      if req.browsers    else []
+        multimedia  = analyze_multimedia(fs)   if req.multimedia  else []
+        report = build_report(os_info, classified, timeline=timeline, deleted=deleted,
+                              persistence=persistence, config=config, services=services,
+                              browsers=browsers, multimedia=multimedia)
+        return report.dict()
     except Exception as e:
         raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
 
