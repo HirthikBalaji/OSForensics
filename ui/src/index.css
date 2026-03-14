@@ -1879,7 +1879,72 @@ kbd {
   flex-shrink: 0;
   padding: 0 12px;
   gap: 2px;
-  overflow-x: auto;
+  overflow: visible;
+  position: relative;
+}
+
+.tab-more-wrap {
+  margin-left: auto;
+  position: relative;
+  display: inline-flex;
+}
+
+.tab-more-btn {
+  border-bottom-color: transparent !important;
+}
+
+.tab-more-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 180px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, .15);
+  z-index: 40;
+  padding: 6px;
+}
+
+.tab-more-item {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  text-align: left;
+  padding: 8px 10px;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.tab-more-item:hover {
+  background: #eff6ff;
+}
+
+.tab-more-item.active {
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-weight: 600;
+}
+
+.tab-measure-wrap {
+  position: absolute;
+  visibility: hidden;
+  pointer-events: none;
+  top: -9999px;
+  left: 0;
+  display: inline-flex;
+  gap: 2px;
+}
+
+.tab-measure-item {
+  white-space: nowrap;
 }
 
 .report-panel-body {

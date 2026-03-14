@@ -3894,8 +3894,13 @@ const REPORT_TABS = [
 
 function ReportPanel({ report, liveInfo, imgPath, onClear, onExport, onReanalyze, reanalyzing }) {
   const [tab, setTab] = useState("summary");
+  const [tabsMenuOpen, setTabsMenuOpen] = useState(false);
+  const [visibleTabIds, setVisibleTabIds] = useState(REPORT_TABS.map((t) => t.id));
   const [dateRangeDraft, setDateRangeDraft] = useState({ from: "", to: "" });
   const [dateRangeApplied, setDateRangeApplied] = useState({ from: "", to: "" });
+  const tabbarRef = useRef(null);
+  const measureWrapRef = useRef(null);
+  const moreMeasureRef = useRef(null);
   const { summary } = report;
   const isLive = !!liveInfo;
 
@@ -3952,6 +3957,86 @@ function ReportPanel({ report, liveInfo, imgPath, onClear, onExport, onReanalyze
   const highMediaFiltered = filteredMultimedia.filter((m) => m.severity === "high" || m.severity === "critical").length;
   const highTailsFiltered = (report.tails || []).filter((t) => t.severity === "high" || t.severity === "critical").length;
 
+  useEffect(() => {
+    function recalcVisibleTabs() {
+      const barW = tabbarRef.current?.clientWidth || 0;
+      const measureWrap = measureWrapRef.current;
+      if (!barW || !measureWrap) return;
+
+      const widthById = new Map();
+      for (const n of measureWrap.querySelectorAll("[data-tab-id]")) {
+        widthById.set(n.getAttribute("data-tab-id"), n.getBoundingClientRect().width);
+      }
+
+      const gap = 2;
+      const order = REPORT_TABS.map((t) => t.id);
+      const moreW = (moreMeasureRef.current?.getBoundingClientRect().width || 74) + gap;
+
+      let used = 0;
+      const ids = [];
+      for (const id of order) {
+        const w = (widthById.get(id) || 84) + (ids.length > 0 ? gap : 0);
+        if (used + w <= barW) {
+          ids.push(id);
+          used += w;
+        } else {
+          break;
+        }
+      }
+
+      const allFit = ids.length === order.length;
+      if (!allFit) {
+        while (ids.length > 1 && used + moreW > barW) {
+          const removed = ids.pop();
+          const rw = (widthById.get(removed) || 84) + (ids.length > 0 ? gap : 0);
+          used -= rw;
+        }
+      }
+
+      if (!ids.includes(tab)) {
+        const base = [tab, ...order.filter((id) => id !== tab)];
+        let u2 = 0;
+        const keep = [];
+        for (const id of base) {
+          const w = (widthById.get(id) || 84) + (keep.length > 0 ? gap : 0);
+          if (u2 + w <= barW) {
+            keep.push(id);
+            u2 += w;
+          } else {
+            break;
+          }
+        }
+        const allFit2 = keep.length === order.length;
+        if (!allFit2) {
+          while (keep.length > 1 && u2 + moreW > barW) {
+            const removed = keep.pop();
+            const rw = (widthById.get(removed) || 84) + (keep.length > 0 ? gap : 0);
+            u2 -= rw;
+          }
+        }
+        setVisibleTabIds(keep);
+      } else {
+        setVisibleTabIds(ids);
+      }
+    }
+
+    recalcVisibleTabs();
+    const ro = new ResizeObserver(recalcVisibleTabs);
+    if (tabbarRef.current) ro.observe(tabbarRef.current);
+    window.addEventListener("resize", recalcVisibleTabs);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", recalcVisibleTabs);
+    };
+  }, [tab, highTimelineFiltered, highDeletedFiltered, highBrowserFiltered, highMediaFiltered, highTailsFiltered]);
+
+  const visibleTabs = REPORT_TABS.filter((t) => visibleTabIds.includes(t.id));
+  const hiddenTabs = REPORT_TABS.filter((t) => !visibleTabIds.includes(t.id));
+
+  useEffect(() => {
+    setTabsMenuOpen(false);
+  }, [tab]);
+
   const badge = {
     timeline:    highTimelineFiltered > 0 ? highTimelineFiltered : null,
     recent:      recentActivities.length > 0 ? recentActivities.length : null,
@@ -3984,13 +4069,43 @@ function ReportPanel({ report, liveInfo, imgPath, onClear, onExport, onReanalyze
           <button className="btn-secondary btn-sm" onClick={onClear}><Trash2 size={12} /> Clear</button>
         </div>
       </div>
-      <div className="report-tabbar">
-        {REPORT_TABS.map(({ id, label, Icon }) => (
+      <div className="report-tabbar" ref={tabbarRef}>
+        {visibleTabs.map(({ id, label, Icon }) => (
           <button key={id} className={`dash-tab ${tab === id ? "active" : ""}`} onClick={() => setTab(id)}>
             <Icon size={12} />{label}
             {badge[id] != null && <span className="tab-badge">{badge[id]}</span>}
           </button>
         ))}
+        {hiddenTabs.length > 0 && (
+          <div className="tab-more-wrap">
+            <button className={`dash-tab tab-more-btn ${tabsMenuOpen ? "active" : ""}`} onClick={() => setTabsMenuOpen((v) => !v)}>
+              <List size={12} /> More <ChevronDown size={11} />
+            </button>
+            {tabsMenuOpen && (
+              <div className="tab-more-menu">
+                {hiddenTabs.map(({ id, label, Icon }) => (
+                  <button
+                    key={id}
+                    className={`tab-more-item ${tab === id ? "active" : ""}`}
+                    onClick={() => { setTab(id); setTabsMenuOpen(false); }}
+                  >
+                    <Icon size={12} /> {label}
+                    {badge[id] != null && <span className="tab-badge">{badge[id]}</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        <div className="tab-measure-wrap" aria-hidden="true" ref={measureWrapRef}>
+          {REPORT_TABS.map(({ id, label, Icon }) => (
+            <span key={`m-${id}`} data-tab-id={id} className="dash-tab tab-measure-item">
+              <Icon size={12} />{label}
+              {badge[id] != null && <span className="tab-badge">{badge[id]}</span>}
+            </span>
+          ))}
+          <span ref={moreMeasureRef} className="dash-tab tab-measure-item"><List size={12} /> More <ChevronDown size={11} /></span>
+        </div>
       </div>
       <div className="report-global-filter">
         <div className="rgf-left">
