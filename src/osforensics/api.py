@@ -5,6 +5,7 @@ an on-disk mounted directory (for development) or a disk image file (dd, etc.).
 
 Extended endpoints:
   POST /analyze           – full analysis (tools + timeline + deleted + persistence + config + services + browsers + multimedia)
+    POST /analyze/ssh       – remote live analysis via SSH snapshot acquisition
   POST /upload            – upload a disk image, analyse, then delete temporary file
   POST /timeline          – timeline-only scan for a given path
   POST /deleted           – deleted-file scan for a given path
@@ -16,6 +17,7 @@ Extended endpoints:
   POST /browsers          – browser forensics (history, bookmarks, cookies, extensions …)
   POST /multimedia        – multimedia forensics (EXIF, GPS, steganography, tampering …)
     POST /analyze/tails     – full analysis with dedicated Tails OS heuristics
+    POST /cases/{id}/analyze/ssh   – remote live analysis saved as a case source
     POST /cases/{id}/analyze/tails – same as above but saved under a case source
 
 Explorer endpoints (Autopsy-style navigation):
@@ -58,6 +60,7 @@ from .explorer import ARTIFACT_TREE, browse, stat_file, read_text
 from .extractor import FilesystemAccessor
 from .multimedia import analyze_multimedia, ALL_MEDIA_EXTS, EXT_TO_MIME
 from .persistence import detect_persistence
+from .remote import collect_remote_snapshot, collect_remote_host_info, RemoteSnapshotError
 from .report import build_report
 from .services import detect_services
 from .tails import analyze_tails
@@ -89,6 +92,12 @@ class CarveRequest(BaseModel):
 
 
 app = FastAPI(title="OS Forensics API")
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    """Return an empty favicon response to avoid browser 404 noise."""
+    return Response(status_code=204)
 
 # Allow the UI dev server to call this API during development
 app.add_middleware(
@@ -511,6 +520,104 @@ class LiveScanRequest(BaseModel):
     multimedia:  bool = False
 
 
+class SSHAnalyzeRequest(BaseModel):
+    host: str
+    username: str
+    port: int = 22
+    password: Optional[str] = None
+    key_path: Optional[str] = None
+    key_passphrase: Optional[str] = None
+
+    # Optional path scope. Defaults to a curated high-value set when omitted.
+    include_paths: Optional[list[str]] = None
+
+    # Acquisition limits to keep remote collection bounded.
+    connect_timeout: int = 10
+    max_total_mb: int = 1024
+    max_file_mb: int = 32
+    max_files: int = 25_000
+
+    # Scan toggles aligned with local live scan.
+    timeline:    bool = True
+    deleted:     bool = True
+    persistence: bool = True
+    config:      bool = True
+    services:    bool = True
+    browsers:    bool = True
+    multimedia:  bool = False
+
+
+def _ssh_analysis(req: SSHAnalyzeRequest) -> dict:
+    """Acquire a bounded remote snapshot over SSH, then analyze it locally."""
+    tmp_dir = tempfile.mkdtemp(prefix="osforensics_ssh_")
+    try:
+        snapshot = collect_remote_snapshot(
+            host=req.host,
+            username=req.username,
+            port=req.port,
+            password=req.password,
+            key_path=req.key_path,
+            key_passphrase=req.key_passphrase,
+            include_paths=req.include_paths,
+            out_dir=tmp_dir,
+            connect_timeout=max(2, req.connect_timeout),
+            max_total_bytes=max(1, req.max_total_mb) * 1024 * 1024,
+            max_file_bytes=max(1, req.max_file_mb) * 1024 * 1024,
+            max_files=max(100, req.max_files),
+        )
+
+        fs = FilesystemAccessor(snapshot.local_root)
+        os_info    = detect_os(fs)
+        findings   = detect_tools(fs)
+        classified = classify_findings(findings)
+        timeline    = build_timeline(fs)      if req.timeline    else []
+        deleted     = detect_deleted(fs)      if req.deleted     else []
+        persistence = detect_persistence(fs)  if req.persistence else []
+        config      = analyze_configs(fs)     if req.config      else []
+        services    = detect_services(fs)     if req.services    else []
+        browsers    = detect_browsers(fs)     if req.browsers    else []
+        multimedia  = analyze_multimedia(fs)  if req.multimedia  else []
+        tails       = analyze_tails(fs, tool_findings=classified)
+        containers  = analyze_containers(fs)
+        report = build_report(
+            os_info,
+            classified,
+            timeline=timeline,
+            deleted=deleted,
+            persistence=persistence,
+            config=config,
+            services=services,
+            browsers=browsers,
+            multimedia=multimedia,
+            tails=tails,
+            containers=containers,
+        )
+        out = report.dict()
+        out.setdefault("summary", {})["analysis_mode"] = "remote_ssh_live"
+        out["remote_target"] = {
+            "host": req.host,
+            "port": req.port,
+            "username": req.username,
+            "scheme": "ssh",
+        }
+        out["live_info"] = snapshot.live_info if snapshot.live_info else {
+            "hostname": req.host,
+            "os_name":  out.get("os_info", {}).get("name") or "Linux",
+            "kernel":   "unknown",
+            "uptime_str": "-",
+            "load_avg": [],
+            "memory":   {"total_kb": 0, "available_kb": 0, "used_pct": 0},
+            "interfaces": [],
+            "process_count": 0,
+            "users": [req.username],
+            "scheme": "remote_ssh",
+        }
+        out["acquisition"] = snapshot.to_dict()
+        return out
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 @app.post("/analyze/live")
 def analyze_live(req: LiveScanRequest = None):
     """Forensic analysis of the running host system. Accepts optional scan-type flags."""
@@ -518,6 +625,52 @@ def analyze_live(req: LiveScanRequest = None):
         req = LiveScanRequest()
     try:
         return _live_analysis(req)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
+
+
+@app.post("/analyze/ssh")
+def analyze_ssh(req: SSHAnalyzeRequest):
+    """Run remote live forensics by acquiring a bounded SSH snapshot first."""
+    try:
+        return _ssh_analysis(req)
+    except RemoteSnapshotError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
+
+
+class SSHInfoRequest(BaseModel):
+    host: str
+    username: str
+    port: int = 22
+    password: Optional[str] = None
+    key_path: Optional[str] = None
+    key_passphrase: Optional[str] = None
+    connect_timeout: int = 10
+
+
+@app.post("/analyze/ssh/info")
+def analyze_ssh_info(req: SSHInfoRequest):
+    """Quick SSH connect to fetch live system metadata without a full snapshot.
+
+    Returns hostname, OS, kernel, uptime, memory, interfaces, users, etc.
+    Useful for verifying credentials and previewing remote host details before
+    starting a full analysis.
+    """
+    try:
+        info = collect_remote_host_info(
+            host=req.host,
+            username=req.username,
+            port=req.port,
+            password=req.password,
+            key_path=req.key_path,
+            key_passphrase=req.key_passphrase,
+            connect_timeout=max(2, req.connect_timeout),
+        )
+        return info
+    except RemoteSnapshotError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
 
@@ -849,6 +1002,29 @@ def cases_analyze_live(case_id: str, req: LiveScanRequest = None):
         label = f"Live System ({host}) [{ts}]"
         source = add_data_source(case_id, "/", label, report)
         return {"source": source, "report": report, "live_info": info}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
+
+
+@app.post("/cases/{case_id}/analyze/ssh")
+def cases_analyze_ssh(case_id: str, req: SSHAnalyzeRequest):
+    """Run remote SSH live-system scan and save results under the selected case."""
+    try:
+        get_case(case_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    try:
+        report = _ssh_analysis(req)
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
+        label = f"Remote SSH ({req.username}@{req.host}:{req.port}) [{ts}]"
+        source_path = f"ssh://{req.username}@{req.host}:{req.port}"
+        source = add_data_source(case_id, source_path, label, report)
+        return {"source": source, "report": report}
+    except RemoteSnapshotError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
 

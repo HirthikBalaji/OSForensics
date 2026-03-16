@@ -33,6 +33,8 @@ const get = async (url) => {
 
 const apiAnalyze     = (path)       => post("/analyze",        { image_path: path });
 const apiAnalyzeLive = (scanTypes)   => post("/analyze/live",  scanTypes || {});
+const apiAnalyzeSsh  = (body)        => post("/analyze/ssh",   body);
+const apiSshInfo     = (body)        => post("/analyze/ssh/info", body);
 const apiLiveInfo    = ()            => get("/live/info");
 const apiFsBrowse    = (path)        => post("/fs/browse",      { path });
 const apiUsbSources  = ()            => get("/fs/usb/sources");
@@ -49,6 +51,7 @@ const apiCaseDelete  = (id)              => fetch(`${API}/cases/${id}`, { method
 const apiCaseAnalyze = (caseId, imgPath) => post(`/cases/${caseId}/analyze`, { image_path: imgPath });
 const apiCaseAnalyzeTails = (caseId, imgPath) => post(`/cases/${caseId}/analyze/tails`, { image_path: imgPath });
 const apiCaseAnalyzeLive = (caseId, scanTypes) => post(`/cases/${caseId}/analyze/live`, scanTypes || {});
+const apiCaseAnalyzeSsh  = (caseId, body)      => post(`/cases/${caseId}/analyze/ssh`, body);
 const apiCaseDelSrc  = (caseId, srcId)   => fetch(`${API}/cases/${caseId}/sources/${srcId}`, { method: "DELETE" }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); });
 const apiRecover     = (img, recoveryId) => post("/deleted/recover", { image_path: img, recovery_id: recoveryId });
 const apiCarveGroups = ()                => get("/deleted/carve/groups");
@@ -519,6 +522,8 @@ const SCAN_TYPES = [
   { key: "multimedia",  label: "Multimedia",        hint: "Image / video / audio metadata (slow)",        default: false },
 ];
 
+const REMOTE_DEFAULT_INCLUDE = "/etc, /var/log, /home, /root, /usr/bin, /usr/sbin, /opt";
+
 function LiveScanDialog({ onClose, onResult, runScan, title = "Scan Live System" }) {
   const defaults = Object.fromEntries(SCAN_TYPES.map(t => [t.key, t.default]));
   const [types,   setTypes]   = useState(defaults);
@@ -531,9 +536,13 @@ function LiveScanDialog({ onClose, onResult, runScan, title = "Scan Live System"
   async function run() {
     setLoading(true); setErr(null);
     try {
-      const result = runScan
-        ? await runScan(types)
-        : (() => Promise.all([apiLiveInfo(), apiAnalyzeLive(types)]).then(([info, report]) => ({ info, report, path: "/" })))();
+      let result;
+      if (runScan) {
+        result = await runScan(types);
+      } else {
+        const [info, report] = await Promise.all([apiLiveInfo(), apiAnalyzeLive(types)]);
+        result = { info, report, path: "/" };
+      }
       onResult(result.report, result.path || "/", result.info, result.source || null);
       onClose();
     } catch (e) {
@@ -573,6 +582,170 @@ function LiveScanDialog({ onClose, onResult, runScan, title = "Scan Live System"
       <div className="dlg-actions">
         <button className="btn-primary" onClick={run} disabled={loading || !anyOn}>
           <Cpu size={14} />{loading ? "Scanning…" : "Start Scan"}
+        </button>
+        <button className="btn-secondary" onClick={onClose}>Cancel</button>
+      </div>
+    </Modal>
+  );
+}
+
+function RemoteScanDialog({ onClose, onResult, runScan, title = "Remote Connect & Live Scan" }) {
+  const defaults = Object.fromEntries(SCAN_TYPES.map(t => [t.key, t.default]));
+  const [host, setHost] = useState("");
+  const [username, setUsername] = useState("");
+  const [port, setPort] = useState(22);
+  const [authMode, setAuthMode] = useState("key");
+  const [password, setPassword] = useState("");
+  const [keyPath, setKeyPath] = useState("~/.ssh/id_ed25519");
+  const [keyPassphrase, setKeyPassphrase] = useState("");
+  const [includePaths, setIncludePaths] = useState(REMOTE_DEFAULT_INCLUDE);
+  const [types, setTypes] = useState(defaults);
+  const [loading, setLoading] = useState(false);
+  const [step, setStep] = useState(null);
+  const [connectedInfo, setConnectedInfo] = useState(null);
+  const [err, setErr] = useState(null);
+
+  const toggle = (key) => setTypes(prev => ({ ...prev, [key]: !prev[key] }));
+  const anyOn = Object.values(types).some(Boolean);
+  const canRun = host.trim() && username.trim() && anyOn;
+
+  async function run() {
+    setLoading(true);
+    setStep("connecting");
+    setConnectedInfo(null);
+    setErr(null);
+    try {
+      const include = includePaths
+        .split(/[\n,]/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+      const authBody = {
+        host: host.trim(),
+        username: username.trim(),
+        port: Number(port) || 22,
+        connect_timeout: 10,
+      };
+
+      if (authMode === "password") {
+        authBody.password = password;
+      } else {
+        authBody.key_path = keyPath.trim();
+        if (keyPassphrase.trim()) authBody.key_passphrase = keyPassphrase;
+      }
+
+      const body = {
+        ...authBody,
+        include_paths: include,
+        max_total_mb: 1024,
+        max_file_mb: 32,
+        max_files: 25000,
+        ...types,
+      };
+
+      const info = await apiSshInfo(authBody);
+      setConnectedInfo(info);
+      setStep("scanning");
+
+      const result = runScan
+        ? await runScan(body)
+        : await apiAnalyzeSsh(body);
+
+      const finalInfo = result.live_info || info || {
+        hostname: body.host,
+        os_name: result.os_info?.name || "Linux",
+        kernel: "unknown",
+        uptime_str: "-",
+        load_avg: [],
+        memory: { total_kb: 0, available_kb: 0, used_pct: 0 },
+        interfaces: [],
+        process_count: 0,
+        users: [body.username],
+        scheme: "remote_ssh",
+      };
+      const path = `ssh://${body.username}@${body.host}:${body.port}`;
+      onResult(result.report || result, path, finalInfo, result.source || null);
+      onClose();
+    } catch (e) {
+      setErr(String(e));
+      setStep(null);
+      setConnectedInfo(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <Modal title={title} onClose={onClose} width={560}>
+      <div className="lsd-body">
+        <div className="dlg-field">
+          <label>Remote Host</label>
+          <input autoFocus value={host} onChange={(e) => setHost(e.target.value)} placeholder="192.168.56.10 or server.example.com" />
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 120px", gap: 10 }}>
+          <div className="dlg-field">
+            <label>Username</label>
+            <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="forensic" />
+          </div>
+          <div className="dlg-field">
+            <label>Port</label>
+            <input type="number" min="1" max="65535" value={port} onChange={(e) => setPort(e.target.value)} />
+          </div>
+        </div>
+
+        <div className="dlg-field">
+          <label>Authentication</label>
+          <div style={{ display: "flex", gap: 10, fontSize: 12 }}>
+            <label><input type="radio" checked={authMode === "key"} onChange={() => setAuthMode("key")} /> SSH Key</label>
+            <label><input type="radio" checked={authMode === "password"} onChange={() => setAuthMode("password")} /> Password</label>
+          </div>
+        </div>
+
+        {authMode === "key" ? (
+          <>
+            <div className="dlg-field">
+              <label>Key Path</label>
+              <input value={keyPath} onChange={(e) => setKeyPath(e.target.value)} placeholder="~/.ssh/id_ed25519" />
+            </div>
+            <div className="dlg-field">
+              <label>Key Passphrase (optional)</label>
+              <input type="password" value={keyPassphrase} onChange={(e) => setKeyPassphrase(e.target.value)} placeholder="Optional" />
+            </div>
+          </>
+        ) : (
+          <div className="dlg-field">
+            <label>Password</label>
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Remote account password" />
+          </div>
+        )}
+
+        <div className="dlg-field">
+          <label>Include Paths (comma/newline separated)</label>
+          <textarea rows={2} value={includePaths} onChange={(e) => setIncludePaths(e.target.value)} />
+        </div>
+
+        <div className="lsd-checks">
+          {SCAN_TYPES.map(({ key, label, hint }) => (
+            <label key={key} className="lsd-check">
+              <input type="checkbox" checked={!!types[key]} onChange={() => toggle(key)} />
+              <span className="lsd-check-info">
+                <span className="lsd-check-label">{label}</span>
+                <span className="lsd-check-hint">{hint}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      </div>
+      {step === "connecting" && !err && (
+        <div className="dlg-note">Connecting to {host.trim() || "remote host"}...</div>
+      )}
+      {step === "scanning" && connectedInfo && !err && (
+        <div className="dlg-note">Connected to {connectedInfo.hostname || host.trim()} ({connectedInfo.os_name || "Linux"}). Downloading snapshot and running analysis...</div>
+      )}
+      {err && <div className="dlg-error">{err}</div>}
+      <div className="dlg-actions">
+        <button className="btn-primary" onClick={run} disabled={loading || !canRun}>
+          <Wifi size={14} />{loading ? (step === "scanning" ? "Scanning..." : "Connecting...") : "Connect & Scan"}
         </button>
         <button className="btn-secondary" onClick={onClose}>Cancel</button>
       </div>
@@ -717,6 +890,7 @@ function ShortcutsDialog({ onClose }) {
   const shortcuts = [
     ["Ctrl + O", "Open Analyze dialog"],
     ["Ctrl + B", "Browse & Open file picker"],
+    ["Ctrl + Shift + L", "Open Remote Connect dialog"],
     ["Ctrl + ,", "Preferences"],
     ["F1",       "Help / About"],
     ["Escape",   "Close current dialog"],
@@ -746,6 +920,7 @@ function MenuBar({ onAction }) {
     File: [
       { label: "Analyze Image / Mountpoint…", key: "analyze",  shortcut: "Ctrl+O" },
       { label: "Browse & Open…",               key: "filepick", shortcut: "Ctrl+B" },
+      { label: "Remote Connect…",              key: "remote_scan", shortcut: "Ctrl+Shift+L" },
       { type: "sep" },
       { label: "Export Report JSON…",         key: "export" },
       { type: "sep" },
@@ -765,6 +940,7 @@ function MenuBar({ onAction }) {
     Tools: [
       { label: "Analyze Image / Mountpoint…", key: "analyze" },
       { label: "Browse & Open…",               key: "filepick" },
+      { label: "Remote Connect…",              key: "remote_scan" },
       { type: "sep" },
       { label: "Keyboard Shortcuts…",         key: "shortcuts" },
     ],
@@ -1424,7 +1600,9 @@ function LiveInfoBanner({ info }) {
     : null;
   return (
     <div className="live-banner">
-      <div className="live-banner-badge"><Cpu size={12} /> LIVE SYSTEM</div>
+      <div className="live-banner-badge">
+        {info.scheme === "remote_ssh" ? <Wifi size={12} /> : <Cpu size={12} />} {info.scheme === "remote_ssh" ? "REMOTE LIVE" : "LIVE SYSTEM"}
+      </div>
       <div className="live-banner-cells">
         <div className="live-cell">
           <span className="live-cell-label">Hostname</span>
@@ -3264,8 +3442,8 @@ function ServiceRow({ svc }) {
           )}
           {svc.flags?.length > 0 && (
             <div className="svc-flags">
-              {svc.flags.map(f => (
-                <span key={f} className="svc-flag"
+              {svc.flags.map((f, i) => (
+                <span key={`${f}-${i}`} className="svc-flag"
                   style={f === "unusual-exec-path" || f === "deprecated-protocol" || f === "crypto-miner"
                     ? { background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca" }
                     : f === "unencrypted-protocol" || f === "shell-exec"
@@ -3399,8 +3577,8 @@ function ServicesTab({ services = [] }) {
         <EmptyState icon={CheckCircle} message="No services match the current filter." />
       ) : (
         <div className="svc-list">
-          {filtered.map(svc => (
-            <ServiceRow key={`${svc.source}-${svc.name}`} svc={svc} />
+          {filtered.map((svc, i) => (
+            <ServiceRow key={`${svc.source || "detected"}-${svc.name}-${i}`} svc={svc} />
           ))}
         </div>
       )}
@@ -4895,6 +5073,11 @@ function WorkspaceHome({ onAction }) {
           <span className="qa-label">Scan Live System</span>
           <span className="qa-hint">Ctrl+L</span>
         </button>
+        <button className="qa-btn" onClick={() => onAction("remote_scan")}>
+          <span className="qa-icon"><Wifi size={28} strokeWidth={1.5} /></span>
+          <span className="qa-label">Remote Connect</span>
+          <span className="qa-hint">Ctrl+Shift+L</span>
+        </button>
       </div>
       <p className="ws-tip">Use the <kbd>File</kbd> menu or toolbar to begin. Press <kbd>F1</kbd> for help.</p>
     </div>
@@ -5320,6 +5503,7 @@ export default function App() {
       case "analyze":       return setDialog("analyze");
       case "filepick":      return setDialog("filepick");
       case "live_scan":     return setDialog("live_scan");
+      case "remote_scan":   return setDialog("remote_scan");
       case "new_case":      return setDialog("new_case");
       case "view_cases":    return setView("cases");
       case "export":        return report ? downloadJSON(report) : setStatus("No report to export");
@@ -5341,7 +5525,8 @@ export default function App() {
     function onKey(e) {
       if (e.ctrlKey && e.key === "o") { e.preventDefault(); handleAction("analyze"); }
       if (e.ctrlKey && e.key === "b") { e.preventDefault(); handleAction("filepick"); }
-      if (e.ctrlKey && e.key === "l") { e.preventDefault(); handleAction("live_scan"); }
+      if (e.ctrlKey && e.shiftKey && (e.key === "L" || e.key === "l")) { e.preventDefault(); handleAction("remote_scan"); return; }
+      if (e.ctrlKey && !e.shiftKey && (e.key === "L" || e.key === "l")) { e.preventDefault(); handleAction("live_scan"); }
       if (e.ctrlKey && e.key === ",") { e.preventDefault(); handleAction("settings"); }
       if (e.key === "F1")             { e.preventDefault(); handleAction("about"); }
     }
@@ -5363,6 +5548,9 @@ export default function App() {
         {!activeCase && imgPath && imgPath !== "/" && <span className="title-path">{imgPath}</span>}
         {!activeCase && imgPath === "/" && (
           <span className="title-live-badge"><Cpu size={11} /> LIVE SYSTEM</span>
+        )}
+        {!activeCase && String(imgPath || "").startsWith("ssh://") && (
+          <span className="title-live-badge"><Wifi size={11} /> REMOTE LIVE</span>
         )}
         {liveScanning && <span className="title-live-scanning"><RefreshCw size={11} className="spin" /> Scanning live system…</span>}
       </div>
@@ -5418,7 +5606,7 @@ export default function App() {
           {view === "report" && report && (
             <ReportPanel
               report={report}
-              liveInfo={imgPath === "/" ? liveInfo : null}
+              liveInfo={imgPath === "/" || report?.summary?.analysis_mode === "remote_ssh_live" ? liveInfo : null}
               imgPath={imgPath}
               onClear={() => handleAction("clear")}
               onExport={() => downloadJSON(report)}
@@ -5437,6 +5625,16 @@ export default function App() {
         <LiveScanDialog
           onClose={closeDialog}
           onResult={(r, path, info) => { handleResult(r, path); setLiveInfo(info); closeDialog(); }}
+        />
+      )}
+      {dialog === "remote_scan" && (
+        <RemoteScanDialog
+          onClose={closeDialog}
+          onResult={(r, path, info) => {
+            handleResult(r, path);
+            setLiveInfo(info || null);
+            closeDialog();
+          }}
         />
       )}
       {dialog === "live_scan_case" && activeCase && (

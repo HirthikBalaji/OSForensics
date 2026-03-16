@@ -72,3 +72,34 @@ recommended, professional structure for Python projects.
 uvicorn src.osforensics.api:app --host 127.0.0.1 --port 8000 --reload
 ```
 
+## Remote SSH Live Forensics
+
+The backend can acquire a bounded snapshot from a remote Linux machine over
+SSH, then run the standard forensic pipeline on that snapshot.
+
+Endpoint: `POST /analyze/ssh`
+
+Example request body:
+
+```json
+{
+	"host": "192.168.56.10",
+	"username": "forensic",
+	"port": 22,
+	"key_path": "/home/user/.ssh/id_ed25519",
+	"include_paths": ["/etc", "/var/log", "/home", "/root"],
+	"max_total_mb": 1024,
+	"max_file_mb": 32,
+	"max_files": 25000,
+	"timeline": true,
+	"deleted": true,
+	"persistence": true,
+	"config": true,
+	"services": true,
+	"browsers": true,
+	"multimedia": false
+}
+```
+
+Case workflow endpoint: `POST /cases/{case_id}/analyze/ssh`
+
