@@ -26,21 +26,37 @@ const post = async (url, body) => {
   return res.json();
 };
 
+const postBlob = async (url, body) => {
+  const res = await fetch(`${API}${url}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
+  const disp = res.headers.get("content-disposition") || "";
+  const match = disp.match(/filename=([^;]+)/i);
+  const filename = match ? match[1].trim().replace(/^"|"$/g, "") : null;
+  return { blob: await res.blob(), filename };
+};
+
 const get = async (url) => {
   const res = await fetch(`${API}${url}`);
   if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
   return res.json();
 };
 
-const apiAnalyze = (path) => post("/analyze", { image_path: path });
-const apiAnalyzeLive = (scanTypes) => post("/analyze/live", scanTypes || {});
-const apiLiveInfo = () => get("/live/info");
-const apiFsBrowse = (path) => post("/fs/browse", { path });
-const apiUsbSources = () => get("/fs/usb/sources");
-const apiBrowse = (img, path) => post("/explore/browse", { image_path: img, path });
-const apiStat = (img, path) => post("/explore/stat", { image_path: img, path });
-const apiRead = (img, path) => post("/explore/read", { image_path: img, path });
-const apiTree = () => get("/explore/tree");
+const apiAnalyze     = (path)       => post("/analyze",        { image_path: path });
+const apiAnalyzeLive = (scanTypes)   => post("/analyze/live",  scanTypes || {});
+const apiAnalyzeSsh  = (body)        => post("/analyze/ssh",   body);
+const apiAnalyzeSshfs = (body)       => post("/analyze/sshfs", body);
+const apiSshInfo     = (body)        => post("/analyze/ssh/info", body);
+const apiLiveInfo    = ()            => get("/live/info");
+const apiFsBrowse    = (path)        => post("/fs/browse",      { path });
+const apiUsbSources  = ()            => get("/fs/usb/sources");
+const apiBrowse      = (img, path)   => post("/explore/browse", { image_path: img, path });
+const apiStat        = (img, path)   => post("/explore/stat",   { image_path: img, path });
+const apiRead        = (img, path)   => post("/explore/read",   { image_path: img, path });
+const apiTree        = ()            => get("/explore/tree");
 
 // ── Case management API ───────────────────────────────────────────────────────
 const apiCasesList = () => get("/cases");
@@ -50,12 +66,16 @@ const apiCaseDelete = (id) => fetch(`${API}/cases/${id}`, { method: "DELETE" }).
 const apiCaseAnalyze = (caseId, imgPath) => post(`/cases/${caseId}/analyze`, { image_path: imgPath });
 const apiCaseAnalyzeTails = (caseId, imgPath) => post(`/cases/${caseId}/analyze/tails`, { image_path: imgPath });
 const apiCaseAnalyzeLive = (caseId, scanTypes) => post(`/cases/${caseId}/analyze/live`, scanTypes || {});
-const apiCaseDelSrc = (caseId, srcId) => fetch(`${API}/cases/${caseId}/sources/${srcId}`, { method: "DELETE" }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); });
-const apiRecover = (img, recoveryId) => post("/deleted/recover", { image_path: img, recovery_id: recoveryId });
-const apiCarveGroups = () => get("/deleted/carve/groups");
-const apiCarve = (img, opts) => post("/deleted/carve", { image_path: img, ...opts });
-const apiMultimedia = (path) => post("/multimedia", { image_path: path });
-const apiMediaUrl = (imgPath, filePath) =>
+const apiCaseAnalyzeSsh  = (caseId, body)      => post(`/cases/${caseId}/analyze/ssh`, body);
+const apiCaseAnalyzeSshfs = (caseId, body)     => post(`/cases/${caseId}/analyze/sshfs`, body);
+const apiCaseDelSrc  = (caseId, srcId)   => fetch(`${API}/cases/${caseId}/sources/${srcId}`, { method: "DELETE" }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); });
+const apiRecover     = (img, recoveryId) => post("/deleted/recover", { image_path: img, recovery_id: recoveryId });
+const apiCarveGroups = ()                => get("/deleted/carve/groups");
+const apiCarve       = (img, opts)       => post("/deleted/carve", { image_path: img, ...opts });
+const apiMultimedia  = (path)            => post("/multimedia", { image_path: path });
+const apiExportReportHtml = (body)       => postBlob("/report/export/html", body);
+const apiExportReportPdf  = (body)       => postBlob("/report/export/pdf", body);
+const apiMediaUrl    = (imgPath, filePath) =>
   `${API}/multimedia/view?image_path=${encodeURIComponent(imgPath)}&file_path=${encodeURIComponent(filePath)}`;
 
 // ── Agent API ─────────────────────────────────────────────────────────────────
@@ -142,6 +162,263 @@ const TAILS_CATEGORY_LABELS = {
   misconfiguration: "Misconfiguration",
   operational_profile: "Operational Profile",
 };
+
+const CONTAINER_SECTIONS = [
+  ["overview", "Overview"],
+  ["inventory", "Containers"],
+  ["images", "Images"],
+  ["filesystem", "Filesystem"],
+  ["execution", "Execution"],
+  ["network", "Network"],
+  ["privilege", "Privilege"],
+  ["deleted", "Deleted"],
+  ["timeline", "Timeline"],
+  ["k8s", "Kubernetes"],
+  ["risk", "Risk & Chain"],
+];
+
+function ContainerTab({ data = {} }) {
+  const [section, setSection] = useState("overview");
+  const inventory = data.inventory || [];
+  const images = data.images || [];
+  const fsChanges = (data.filesystem || {}).changes || [];
+  const deleted = (data.deleted || []);
+  const timeline = data.timeline || [];
+  const privilegeFindings = ((data.privilege || {}).findings || []);
+  const netConns = ((data.network || {}).connections || []);
+  const execCmds = ((data.execution || {}).commands || []);
+  const offensive = data.offensive_tools || [];
+  const risk = data.risk || {};
+  const riskChain = data.attack_chain || [];
+  const k8sData = data.kubernetes || data.k8s || {};
+
+  const renderEmpty = (message) => (
+    <div className="empty-state">
+      <Box size={28} />
+      <p>{message}</p>
+    </div>
+  );
+
+  return (
+    <div className="tab-content">
+      <div className="ct-toolbar" style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+        {CONTAINER_SECTIONS.map(([id, label]) => (
+          <button
+            key={id}
+            className={`case-tab ${section === id ? "active" : ""}`}
+            onClick={() => setSection(id)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {section === "overview" && (
+        <div className="ct-block" style={{ display: "grid", gap: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 }}>
+            <div className="stat-card"><strong>{inventory.length}</strong><span>Containers</span></div>
+            <div className="stat-card"><strong>{images.length}</strong><span>Images</span></div>
+            <div className="stat-card"><strong>{fsChanges.length}</strong><span>Filesystem Changes</span></div>
+            <div className="stat-card"><strong>{execCmds.length}</strong><span>Commands</span></div>
+            <div className="stat-card"><strong>{netConns.length}</strong><span>Connections</span></div>
+            <div className="stat-card"><strong>{deleted.length}</strong><span>Deleted Artifacts</span></div>
+          </div>
+          <table className="rp-table">
+            <tbody>
+              <tr><td>Cluster / Scope</td><td>{data.cluster || data.scope || "-"}</td></tr>
+              <tr><td>Risk Score</td><td>{risk.score ?? risk.total ?? "-"}</td></tr>
+              <tr><td>Attack Chain Nodes</td><td>{riskChain.length}</td></tr>
+              <tr><td>Offensive Tool Hits</td><td>{offensive.length}</td></tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {section === "inventory" && (
+        inventory.length === 0 ? renderEmpty("No containers in inventory.") : (
+          <table className="rp-table">
+            <thead><tr><th>Name</th><th>Role</th><th>Image</th><th>Risk</th><th>Status</th></tr></thead>
+            <tbody>
+              {inventory.map((c, i) => (
+                <tr key={c.id || c.name || i}>
+                  <td>{c.name || c.id || "-"}</td>
+                  <td>{c.role || "General"}</td>
+                  <td><code>{c.image || "-"}</code></td>
+                  <td>{c.risk_score ?? "-"}</td>
+                  <td>{c.status || "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )
+      )}
+
+      {section === "images" && (
+        images.length === 0 ? renderEmpty("No images reported.") : (
+          <table className="rp-table">
+            <thead><tr><th>Image</th><th>Tag</th><th>Digest</th><th>Size</th></tr></thead>
+            <tbody>
+              {images.map((img, i) => (
+                <tr key={img.id || img.name || i}>
+                  <td>{img.name || img.repository || "-"}</td>
+                  <td>{img.tag || "-"}</td>
+                  <td><code>{img.digest || "-"}</code></td>
+                  <td>{img.size || "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )
+      )}
+
+      {section === "filesystem" && (
+        fsChanges.length === 0 ? renderEmpty("No filesystem changes detected.") : (
+          <table className="rp-table">
+            <thead><tr><th>Path</th><th>Change</th><th>Container</th><th>Detail</th></tr></thead>
+            <tbody>
+              {fsChanges.map((change, i) => (
+                <tr key={change.path || i}>
+                  <td><code>{change.path || "-"}</code></td>
+                  <td>{change.type || change.change || "-"}</td>
+                  <td>{change.container || "-"}</td>
+                  <td>{change.detail || "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )
+      )}
+
+      {section === "execution" && (
+        execCmds.length === 0 ? renderEmpty("No command execution history available.") : (
+          <table className="rp-table">
+            <thead><tr><th>Timestamp</th><th>Container</th><th>Command</th><th>User</th></tr></thead>
+            <tbody>
+              {execCmds.map((cmd, i) => (
+                <tr key={i}>
+                  <td>{fmtDate(cmd.timestamp)}</td>
+                  <td>{cmd.container || "-"}</td>
+                  <td><code>{cmd.command || cmd.cmd || "-"}</code></td>
+                  <td>{cmd.user || "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )
+      )}
+
+      {section === "network" && (
+        netConns.length === 0 ? renderEmpty("No network connections captured.") : (
+          <table className="rp-table">
+            <thead><tr><th>Container</th><th>Protocol</th><th>Source</th><th>Destination</th><th>State</th></tr></thead>
+            <tbody>
+              {netConns.map((conn, i) => (
+                <tr key={i}>
+                  <td>{conn.container || "-"}</td>
+                  <td>{conn.protocol || "-"}</td>
+                  <td><code>{conn.source || conn.src || "-"}</code></td>
+                  <td><code>{conn.destination || conn.dst || "-"}</code></td>
+                  <td>{conn.state || "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )
+      )}
+
+      {section === "privilege" && (
+        privilegeFindings.length === 0 ? renderEmpty("No privilege findings reported.") : (
+          <table className="rp-table">
+            <thead><tr><th>Container</th><th>Severity</th><th>Finding</th><th>Detail</th></tr></thead>
+            <tbody>
+              {privilegeFindings.map((finding, i) => (
+                <tr key={i}>
+                  <td>{finding.container || "-"}</td>
+                  <td>{finding.severity || "-"}</td>
+                  <td>{finding.title || finding.finding || "-"}</td>
+                  <td>{finding.detail || "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )
+      )}
+
+      {section === "deleted" && (
+        deleted.length === 0 ? renderEmpty("No deleted artifacts were recovered.") : (
+          <table className="rp-table">
+            <thead><tr><th>Path</th><th>Container</th><th>Recovered</th><th>Detail</th></tr></thead>
+            <tbody>
+              {deleted.map((item, i) => (
+                <tr key={item.path || i}>
+                  <td><code>{item.path || "-"}</code></td>
+                  <td>{item.container || "-"}</td>
+                  <td>{item.recovered ? "Yes" : "No"}</td>
+                  <td>{item.detail || "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )
+      )}
+
+      {section === "timeline" && (
+        timeline.length === 0 ? renderEmpty("No timeline events available.") : (
+          <table className="rp-table">
+            <thead><tr><th>Timestamp</th><th>Container</th><th>Event</th><th>Detail</th></tr></thead>
+            <tbody>
+              {timeline.map((ev, i) => (
+                <tr key={i}>
+                  <td>{fmtDate(ev.timestamp)}</td>
+                  <td>{ev.container || "-"}</td>
+                  <td>{ev.event || ev.type || "-"}</td>
+                  <td>{ev.detail || "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )
+      )}
+
+      {section === "k8s" && (
+        Object.keys(k8sData).length === 0 ? renderEmpty("No Kubernetes metadata detected.") : (
+          <div className="ct-block">
+            <pre className="json-block" style={{ margin: 0 }}>{JSON.stringify(k8sData, null, 2)}</pre>
+          </div>
+        )
+      )}
+
+      {section === "risk" && (
+        <div className="ct-block">
+          <table className="rp-table" style={{ marginBottom: 10 }}>
+            <thead><tr><th>Container</th><th>Role</th><th>Risk</th><th>Reasons</th></tr></thead>
+            <tbody>
+              {inventory.slice(0, 40).map((c, i) => (
+                <tr key={c.id || c.name || i}>
+                  <td>{c.name || "-"}</td>
+                  <td>{c.role || "General"}</td>
+                  <td>{c.risk_score ?? "-"}</td>
+                  <td><code>{(c.risk_reasons || []).join(", ") || "-"}</code></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <table className="rp-table">
+            <thead><tr><th>Attack Chain Node</th><th>Role</th><th>Reasons</th></tr></thead>
+            <tbody>
+              {riskChain.map((a, i) => (
+                <tr key={i}><td>{a.container || "-"}</td><td>{a.role || "-"}</td><td><code>{(a.reasons || []).join(", ") || "-"}</code></td></tr>
+              ))}
+            </tbody>
+          </table>
+          {offensive.length > 0 && (
+            <div className="ct-inline-note">Offensive tools detected in containers: <code>{offensive.map((o) => `${o.container}=[${(o.tools || []).join(",")}]`).join(" | ")}</code></div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function TailsTab({ findings = [], summary = {} }) {
   const [search, setSearch] = useState("");
@@ -269,6 +546,8 @@ const SCAN_TYPES = [
   { key: "multimedia", label: "Multimedia", hint: "Image / video / audio metadata (slow)", default: false },
 ];
 
+const REMOTE_DEFAULT_INCLUDE = "/etc, /var/log, /home, /root, /usr/bin, /usr/sbin, /opt";
+
 function LiveScanDialog({ onClose, onResult, runScan, title = "Scan Live System" }) {
   const defaults = Object.fromEntries(SCAN_TYPES.map(t => [t.key, t.default]));
   const [types, setTypes] = useState(defaults);
@@ -281,9 +560,13 @@ function LiveScanDialog({ onClose, onResult, runScan, title = "Scan Live System"
   async function run() {
     setLoading(true); setErr(null);
     try {
-      const result = runScan
-        ? await runScan(types)
-        : (() => Promise.all([apiLiveInfo(), apiAnalyzeLive(types)]).then(([info, report]) => ({ info, report, path: "/" })))();
+      let result;
+      if (runScan) {
+        result = await runScan(types);
+      } else {
+        const [info, report] = await Promise.all([apiLiveInfo(), apiAnalyzeLive(types)]);
+        result = { info, report, path: "/" };
+      }
       onResult(result.report, result.path || "/", result.info, result.source || null);
       onClose();
     } catch (e) {
@@ -323,6 +606,280 @@ function LiveScanDialog({ onClose, onResult, runScan, title = "Scan Live System"
       <div className="dlg-actions">
         <button className="btn-primary" onClick={run} disabled={loading || !anyOn}>
           <Cpu size={14} />{loading ? "Scanning…" : "Start Scan"}
+        </button>
+        <button className="btn-secondary" onClick={onClose}>Cancel</button>
+      </div>
+    </Modal>
+  );
+}
+
+function RemoteScanDialog({ onClose, onResult, runScan, title = "Remote Connect & Live Scan" }) {
+  const defaults = Object.fromEntries(SCAN_TYPES.map(t => [t.key, t.default]));
+  const [mode, setMode] = useState("ssh_snapshot");
+    const [mountedPath, setMountedPath] = useState("/");
+  const [host, setHost] = useState("");
+  const [username, setUsername] = useState("");
+  const [port, setPort] = useState(22);
+  const [authMode, setAuthMode] = useState("key");
+  const [password, setPassword] = useState("");
+  const [keyPath, setKeyPath] = useState("~/.ssh/id_ed25519");
+  const [keyPassphrase, setKeyPassphrase] = useState("");
+  const [includePaths, setIncludePaths] = useState(REMOTE_DEFAULT_INCLUDE);
+  const [types, setTypes] = useState(defaults);
+  const [loading, setLoading] = useState(false);
+  const [step, setStep] = useState(null);
+  const [connectedInfo, setConnectedInfo] = useState(null);
+  const [err, setErr] = useState(null);
+
+  const toggle = (key) => setTypes(prev => ({ ...prev, [key]: !prev[key] }));
+  const anyOn = Object.values(types).some(Boolean);
+  const canRun = mode === "mounted_path"
+    ? !!host.trim() && !!username.trim() && !!mountedPath.trim()
+    : !!host.trim() && !!username.trim() && anyOn;
+
+  async function run() {
+    setLoading(true);
+    setStep("connecting");
+    setConnectedInfo(null);
+    setErr(null);
+    try {
+      if (mode === "mounted_path") {
+        const authBody = {
+          host: host.trim(),
+          username: username.trim(),
+          port: Number(port) || 22,
+          connect_timeout: 10,
+        };
+        if (authMode === "password") {
+          authBody.password = password;
+        } else {
+          authBody.key_path = keyPath.trim();
+          if (keyPassphrase.trim()) authBody.key_passphrase = keyPassphrase;
+        }
+
+        const info = await apiSshInfo(authBody);
+        setConnectedInfo(info);
+        setStep("scanning");
+
+        const body = {
+          ...authBody,
+          remote_path: mountedPath.trim(),
+        };
+
+        let mountedResult;
+        if (runScan) {
+          mountedResult = await runScan({ mode: "mounted_path", ...body });
+        } else {
+          mountedResult = await apiAnalyzeSshfs(body);
+        }
+        const mountedReport = mountedResult?.report || mountedResult;
+        const mountedInfo = mountedResult?.live_info || mountedResult?.info || info || null;
+        const sourcePath = `sshfs://${authBody.username}@${authBody.host}:${authBody.port}${body.remote_path}`;
+        onResult(mountedReport, sourcePath, mountedInfo, mountedResult?.source || null);
+        onClose();
+        return;
+      }
+
+      const include = includePaths
+        .split(/[\n,]/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+      const authBody = {
+        host: host.trim(),
+        username: username.trim(),
+        port: Number(port) || 22,
+        connect_timeout: 10,
+      };
+
+      if (authMode === "password") {
+        authBody.password = password;
+      } else {
+        authBody.key_path = keyPath.trim();
+        if (keyPassphrase.trim()) authBody.key_passphrase = keyPassphrase;
+      }
+
+      const body = {
+        ...authBody,
+        include_paths: include,
+        max_total_mb: 1024,
+        max_file_mb: 32,
+        max_files: 25000,
+        ...types,
+      };
+
+      const info = await apiSshInfo(authBody);
+      setConnectedInfo(info);
+      setStep("scanning");
+
+      const result = runScan
+        ? await runScan(body)
+        : await apiAnalyzeSsh(body);
+
+      const finalInfo = result.live_info || info || {
+        hostname: body.host,
+        os_name: result.os_info?.name || "Linux",
+        kernel: "unknown",
+        uptime_str: "-",
+        load_avg: [],
+        memory: { total_kb: 0, available_kb: 0, used_pct: 0 },
+        interfaces: [],
+        process_count: 0,
+        users: [body.username],
+        scheme: "remote_ssh",
+      };
+      const path = `ssh://${body.username}@${body.host}:${body.port}`;
+      onResult(result.report || result, path, finalInfo, result.source || null);
+      onClose();
+    } catch (e) {
+      setErr(String(e));
+      setStep(null);
+      setConnectedInfo(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <Modal title={title} onClose={onClose} width={560}>
+      <div className="lsd-body">
+        <div className="dlg-field">
+          <label>Mode</label>
+          <div style={{ display: "flex", gap: 10, fontSize: 12 }}>
+            <label><input type="radio" checked={mode === "ssh_snapshot"} onChange={() => setMode("ssh_snapshot")} /> SSH Snapshot</label>
+            <label><input type="radio" checked={mode === "mounted_path"} onChange={() => setMode("mounted_path")} /> Mounted Path</label>
+          </div>
+        </div>
+
+        {mode === "ssh_snapshot" ? (
+          <>
+            <div className="dlg-field">
+              <label>Remote Host</label>
+              <input autoFocus value={host} onChange={(e) => setHost(e.target.value)} placeholder="192.168.56.10 or server.example.com" />
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 120px", gap: 10 }}>
+              <div className="dlg-field">
+                <label>Username</label>
+                <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="forensic" />
+              </div>
+              <div className="dlg-field">
+                <label>Port</label>
+                <input type="number" min="1" max="65535" value={port} onChange={(e) => setPort(e.target.value)} />
+              </div>
+            </div>
+
+            <div className="dlg-field">
+              <label>Authentication</label>
+              <div style={{ display: "flex", gap: 10, fontSize: 12 }}>
+                <label><input type="radio" checked={authMode === "key"} onChange={() => setAuthMode("key")} /> SSH Key</label>
+                <label><input type="radio" checked={authMode === "password"} onChange={() => setAuthMode("password")} /> Password</label>
+              </div>
+            </div>
+
+            {authMode === "key" ? (
+              <>
+                <div className="dlg-field">
+                  <label>Key Path</label>
+                  <input value={keyPath} onChange={(e) => setKeyPath(e.target.value)} placeholder="~/.ssh/id_ed25519" />
+                </div>
+                <div className="dlg-field">
+                  <label>Key Passphrase (optional)</label>
+                  <input type="password" value={keyPassphrase} onChange={(e) => setKeyPassphrase(e.target.value)} placeholder="Optional" />
+                </div>
+              </>
+            ) : (
+              <div className="dlg-field">
+                <label>Password</label>
+                <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Remote account password" />
+              </div>
+            )}
+
+            <div className="dlg-field">
+              <label>Include Paths (comma/newline separated)</label>
+              <textarea rows={2} value={includePaths} onChange={(e) => setIncludePaths(e.target.value)} />
+            </div>
+
+            <div className="lsd-checks">
+              {SCAN_TYPES.map(({ key, label, hint }) => (
+                <label key={key} className="lsd-check">
+                  <input type="checkbox" checked={!!types[key]} onChange={() => toggle(key)} />
+                  <span className="lsd-check-info">
+                    <span className="lsd-check-label">{label}</span>
+                    <span className="lsd-check-hint">{hint}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="dlg-field">
+              <label>Remote Host</label>
+              <input autoFocus value={host} onChange={(e) => setHost(e.target.value)} placeholder="192.168.56.10 or server.example.com" />
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 120px", gap: 10 }}>
+              <div className="dlg-field">
+                <label>Username</label>
+                <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="forensic" />
+              </div>
+              <div className="dlg-field">
+                <label>Port</label>
+                <input type="number" min="1" max="65535" value={port} onChange={(e) => setPort(e.target.value)} />
+              </div>
+            </div>
+
+            <div className="dlg-field">
+              <label>Authentication</label>
+              <div style={{ display: "flex", gap: 10, fontSize: 12 }}>
+                <label><input type="radio" checked={authMode === "key"} onChange={() => setAuthMode("key")} /> SSH Key</label>
+                <label><input type="radio" checked={authMode === "password"} onChange={() => setAuthMode("password")} /> Password</label>
+              </div>
+            </div>
+
+            {authMode === "key" ? (
+              <>
+                <div className="dlg-field">
+                  <label>Key Path</label>
+                  <input value={keyPath} onChange={(e) => setKeyPath(e.target.value)} placeholder="~/.ssh/id_ed25519" />
+                </div>
+                <div className="dlg-field">
+                  <label>Key Passphrase (optional)</label>
+                  <input type="password" value={keyPassphrase} onChange={(e) => setKeyPassphrase(e.target.value)} placeholder="Optional" />
+                </div>
+              </>
+            ) : (
+              <div className="dlg-field">
+                <label>Password</label>
+                <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Remote account password" />
+              </div>
+            )}
+
+            <div className="dlg-field">
+              <label>Remote Path To Mount</label>
+              <input value={mountedPath} onChange={(e) => setMountedPath(e.target.value)} placeholder="/" />
+            </div>
+            <div className="dlg-note">
+              Backend auto-mounts this path with SSHFS, runs analysis, then unmounts automatically.
+            </div>
+          </>
+        )}
+      </div>
+      {mode === "ssh_snapshot" && step === "connecting" && !err && (
+        <div className="dlg-note">Connecting to {host.trim() || "remote host"}...</div>
+      )}
+      {mode === "mounted_path" && step === "connecting" && !err && (
+        <div className="dlg-note">Connecting to {host.trim() || "remote host"} for backend mount...</div>
+      )}
+      {mode === "mounted_path" && step === "scanning" && connectedInfo && !err && (
+        <div className="dlg-note">Connected to {connectedInfo.hostname || host.trim()} ({connectedInfo.os_name || "Linux"}). Mounting {mountedPath.trim() || "/"} and running analysis...</div>
+      )}
+      {mode === "ssh_snapshot" && step === "scanning" && connectedInfo && !err && (
+        <div className="dlg-note">Connected to {connectedInfo.hostname || host.trim()} ({connectedInfo.os_name || "Linux"}). Downloading snapshot and running analysis...</div>
+      )}
+      {err && <div className="dlg-error">{err}</div>}
+      <div className="dlg-actions">
+        <button className="btn-primary" onClick={run} disabled={loading || !canRun}>
+          <Wifi size={14} />{loading ? (step === "scanning" ? "Scanning..." : "Connecting...") : (mode === "mounted_path" ? "Mount & Scan" : "Connect & Scan")}
         </button>
         <button className="btn-secondary" onClick={onClose}>Cancel</button>
       </div>
@@ -467,6 +1024,7 @@ function ShortcutsDialog({ onClose }) {
   const shortcuts = [
     ["Ctrl + O", "Open Analyze dialog"],
     ["Ctrl + B", "Browse & Open file picker"],
+    ["Ctrl + Shift + L", "Open Remote Connect dialog"],
     ["Ctrl + ,", "Preferences"],
     ["F1", "Help / About"],
     ["Escape", "Close current dialog"],
@@ -494,8 +1052,9 @@ function MenuBar({ onAction }) {
 
   const menus = {
     File: [
-      { label: "Analyze Image / Mountpoint…", key: "analyze", shortcut: "Ctrl+O" },
-      { label: "Browse & Open…", key: "filepick", shortcut: "Ctrl+B" },
+      { label: "Analyze Image / Mountpoint…", key: "analyze",  shortcut: "Ctrl+O" },
+      { label: "Browse & Open…",               key: "filepick", shortcut: "Ctrl+B" },
+      { label: "Remote Connect…",              key: "remote_scan", shortcut: "Ctrl+Shift+L" },
       { type: "sep" },
       { label: "Export Report JSON…", key: "export" },
       { type: "sep" },
@@ -514,7 +1073,8 @@ function MenuBar({ onAction }) {
     ],
     Tools: [
       { label: "Analyze Image / Mountpoint…", key: "analyze" },
-      { label: "Browse & Open…", key: "filepick" },
+      { label: "Browse & Open…",               key: "filepick" },
+      { label: "Remote Connect…",              key: "remote_scan" },
       { type: "sep" },
       { label: "Keyboard Shortcuts…", key: "shortcuts" },
     ],
@@ -1174,7 +1734,9 @@ function LiveInfoBanner({ info }) {
     : null;
   return (
     <div className="live-banner">
-      <div className="live-banner-badge"><Cpu size={12} /> LIVE SYSTEM</div>
+      <div className="live-banner-badge">
+        {info.scheme === "remote_ssh" ? <Wifi size={12} /> : <Cpu size={12} />} {info.scheme === "remote_ssh" ? "REMOTE LIVE" : "LIVE SYSTEM"}
+      </div>
       <div className="live-banner-cells">
         <div className="live-cell">
           <span className="live-cell-label">Hostname</span>
@@ -3245,8 +3807,8 @@ function ServiceRow({ svc }) {
           )}
           {svc.flags?.length > 0 && (
             <div className="svc-flags">
-              {svc.flags.map(f => (
-                <span key={f} className="svc-flag"
+              {svc.flags.map((f, i) => (
+                <span key={`${f}-${i}`} className="svc-flag"
                   style={f === "unusual-exec-path" || f === "deprecated-protocol" || f === "crypto-miner"
                     ? { background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca" }
                     : f === "unencrypted-protocol" || f === "shell-exec"
@@ -3380,8 +3942,8 @@ function ServicesTab({ services = [] }) {
         <EmptyState icon={CheckCircle} message="No services match the current filter." />
       ) : (
         <div className="svc-list">
-          {filtered.map(svc => (
-            <ServiceRow key={`${svc.source}-${svc.name}`} svc={svc} />
+          {filtered.map((svc, i) => (
+            <ServiceRow key={`${svc.source || "detected"}-${svc.name}-${i}`} svc={svc} />
           ))}
         </div>
       )}
@@ -4226,14 +4788,20 @@ const REPORT_TABS = [
   { id: "multimedia", label: "Multimedia", Icon: Image },
   { id: "tails", label: "TailsOS", Icon: Sailboat },
   { id: "antiforensics", label: "Anti-Forensics", Icon: ShieldAlert },
+  { id: "containers", label: "Containers", Icon: Box },
   { id: "tools", label: "Tools", Icon: Search },
   { id: "evidence", label: "Evidence", Icon: Package },
 ];
 
-function ReportPanel({ report, liveInfo, imgPath, onClear, onExport, onReanalyze, reanalyzing }) {
+function ReportPanel({ report, liveInfo, imgPath, onClear, onExportJson, onExportHtml, onExportPdf, onExportExecutivePdf, onReanalyze, reanalyzing }) {
   const [tab, setTab] = useState("summary");
+  const [tabsMenuOpen, setTabsMenuOpen] = useState(false);
+  const [visibleTabIds, setVisibleTabIds] = useState(REPORT_TABS.map((t) => t.id));
   const [dateRangeDraft, setDateRangeDraft] = useState({ from: "", to: "" });
   const [dateRangeApplied, setDateRangeApplied] = useState({ from: "", to: "" });
+  const tabbarRef = useRef(null);
+  const measureWrapRef = useRef(null);
+  const moreMeasureRef = useRef(null);
   const { summary } = report;
   const isLive = !!liveInfo;
 
@@ -4289,6 +4857,97 @@ function ReportPanel({ report, liveInfo, imgPath, onClear, onExport, onReanalyze
   );
   const highMediaFiltered = filteredMultimedia.filter((m) => m.severity === "high" || m.severity === "critical").length;
   const highTailsFiltered = (report.tails || []).filter((t) => t.severity === "high" || t.severity === "critical").length;
+  const containersDetected = !!(report.containers && report.containers.detected);
+  const reportTabs = useMemo(
+    () => REPORT_TABS.filter((t) => t.id !== "containers" || containersDetected),
+    [containersDetected]
+  );
+
+  useEffect(() => {
+    if (!reportTabs.some((t) => t.id === tab)) {
+      setTab("summary");
+    }
+  }, [reportTabs, tab]);
+
+  useEffect(() => {
+    function recalcVisibleTabs() {
+      const barW = tabbarRef.current?.clientWidth || 0;
+      const measureWrap = measureWrapRef.current;
+      if (!barW || !measureWrap) return;
+
+      const widthById = new Map();
+      for (const n of measureWrap.querySelectorAll("[data-tab-id]")) {
+        widthById.set(n.getAttribute("data-tab-id"), n.getBoundingClientRect().width);
+      }
+
+      const gap = 2;
+      const order = reportTabs.map((t) => t.id);
+      const moreW = (moreMeasureRef.current?.getBoundingClientRect().width || 74) + gap;
+
+      let used = 0;
+      const ids = [];
+      for (const id of order) {
+        const w = (widthById.get(id) || 84) + (ids.length > 0 ? gap : 0);
+        if (used + w <= barW) {
+          ids.push(id);
+          used += w;
+        } else {
+          break;
+        }
+      }
+
+      const allFit = ids.length === order.length;
+      if (!allFit) {
+        while (ids.length > 1 && used + moreW > barW) {
+          const removed = ids.pop();
+          const rw = (widthById.get(removed) || 84) + (ids.length > 0 ? gap : 0);
+          used -= rw;
+        }
+      }
+
+      if (!ids.includes(tab)) {
+        const base = [tab, ...order.filter((id) => id !== tab)];
+        let u2 = 0;
+        const keep = [];
+        for (const id of base) {
+          const w = (widthById.get(id) || 84) + (keep.length > 0 ? gap : 0);
+          if (u2 + w <= barW) {
+            keep.push(id);
+            u2 += w;
+          } else {
+            break;
+          }
+        }
+        const allFit2 = keep.length === order.length;
+        if (!allFit2) {
+          while (keep.length > 1 && u2 + moreW > barW) {
+            const removed = keep.pop();
+            const rw = (widthById.get(removed) || 84) + (keep.length > 0 ? gap : 0);
+            u2 -= rw;
+          }
+        }
+        setVisibleTabIds(keep);
+      } else {
+        setVisibleTabIds(ids);
+      }
+    }
+
+    recalcVisibleTabs();
+    const ro = new ResizeObserver(recalcVisibleTabs);
+    if (tabbarRef.current) ro.observe(tabbarRef.current);
+    window.addEventListener("resize", recalcVisibleTabs);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", recalcVisibleTabs);
+    };
+  }, [tab, highTimelineFiltered, highDeletedFiltered, highBrowserFiltered, highMediaFiltered, highTailsFiltered, reportTabs]);
+
+  const visibleTabs = reportTabs.filter((t) => visibleTabIds.includes(t.id));
+  const hiddenTabs = reportTabs.filter((t) => !visibleTabIds.includes(t.id));
+
+  useEffect(() => {
+    setTabsMenuOpen(false);
+  }, [tab]);
 
   const badge = {
     timeline: highTimelineFiltered > 0 ? highTimelineFiltered : null,
@@ -4302,6 +4961,7 @@ function ReportPanel({ report, liveInfo, imgPath, onClear, onExport, onReanalyze
     tails: highTailsFiltered > 0 ? highTailsFiltered : null,
     tools: summary?.high_risk_tools > 0 ? summary.high_risk_tools : null,
     antiforensics: summary?.high_antiforensics > 0 ? summary.high_antiforensics : null,
+    containers:  summary?.high_containers > 0 ? summary.high_containers : null,
   };
   return (
     <div className="report-panel">
@@ -4319,17 +4979,50 @@ function ReportPanel({ report, liveInfo, imgPath, onClear, onExport, onReanalyze
           <button className="btn-secondary btn-sm" onClick={onReanalyze} disabled={reanalyzing} title="Re-run analysis on the same image">
             <RefreshCw size={12} className={reanalyzing ? "spin" : ""} /> {reanalyzing ? "Analyzing…" : "Reanalyze"}
           </button>
-          <button className="btn-secondary btn-sm" onClick={onExport}><FolderOpen size={12} /> Export</button>
+          <button className="btn-secondary btn-sm" onClick={onExportJson} title="Download raw forensic report as JSON"><FolderOpen size={12} /> JSON</button>
+          <button className="btn-secondary btn-sm" onClick={onExportHtml} title="Generate a structured HTML forensic dossier"><FileText size={12} /> HTML</button>
+          <button className="btn-secondary btn-sm" onClick={onExportPdf} title="Export comprehensive report as PDF"><Download size={12} /> PDF</button>
+          <button className="btn-secondary btn-sm" onClick={onExportExecutivePdf} title="Export a concise executive summary PDF"><Download size={12} /> Exec PDF</button>
           <button className="btn-secondary btn-sm" onClick={onClear}><Trash2 size={12} /> Clear</button>
         </div>
       </div>
-      <div className="report-tabbar">
-        {REPORT_TABS.map(({ id, label, Icon }) => (
+      <div className="report-tabbar" ref={tabbarRef}>
+        {visibleTabs.map(({ id, label, Icon }) => (
           <button key={id} className={`dash-tab ${tab === id ? "active" : ""}`} onClick={() => setTab(id)}>
             <Icon size={12} />{label}
             {badge[id] != null && <span className="tab-badge">{badge[id]}</span>}
           </button>
         ))}
+        {hiddenTabs.length > 0 && (
+          <div className="tab-more-wrap">
+            <button className={`dash-tab tab-more-btn ${tabsMenuOpen ? "active" : ""}`} onClick={() => setTabsMenuOpen((v) => !v)}>
+              <List size={12} /> More <ChevronDown size={11} />
+            </button>
+            {tabsMenuOpen && (
+              <div className="tab-more-menu">
+                {hiddenTabs.map(({ id, label, Icon }) => (
+                  <button
+                    key={id}
+                    className={`tab-more-item ${tab === id ? "active" : ""}`}
+                    onClick={() => { setTab(id); setTabsMenuOpen(false); }}
+                  >
+                    <Icon size={12} /> {label}
+                    {badge[id] != null && <span className="tab-badge">{badge[id]}</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        <div className="tab-measure-wrap" aria-hidden="true" ref={measureWrapRef}>
+          {reportTabs.map(({ id, label, Icon }) => (
+            <span key={`m-${id}`} data-tab-id={id} className="dash-tab tab-measure-item">
+              <Icon size={12} />{label}
+              {badge[id] != null && <span className="tab-badge">{badge[id]}</span>}
+            </span>
+          ))}
+          <span ref={moreMeasureRef} className="dash-tab tab-measure-item"><List size={12} /> More <ChevronDown size={11} /></span>
+        </div>
       </div>
       <div className="report-global-filter">
         <div className="rgf-left">
@@ -4384,6 +5077,7 @@ function ReportPanel({ report, liveInfo, imgPath, onClear, onExport, onReanalyze
         {tab === "multimedia" && <MultimediaTab findings={filteredMultimedia} imgPath={imgPath} />}
         {tab === "tails" && <TailsTab findings={report.tails || []} summary={summary || {}} />}
         {tab === "antiforensics" && <AntiForensicsTab findings={report.antiforensics || []} timelineAI={report.timeline_ai} />}
+        {tab === "containers" && <ContainerTab data={report.containers || {}} />}
         {tab === "tools" && <ToolsTab findings={report.findings} />}
         {tab === "evidence" && <EvidenceLocker report={report} />}
       </div>
@@ -4683,9 +5377,33 @@ function CasesView({ onOpen, onNewCase }) {
 }
 
 // ── CasePanel ─────────────────────────────────────────────────────────────────
-function CasePanel({ caseData, activeSourceId, onSelectSource, onAddSource, onAddTailsSource, onAddTailsUsbSource, onScanLiveToCase, onDeleteSource, onBack }) {
+function CasePanel({ caseData, activeSourceId, onSelectSource, onAddSource, onAddTailsSource, onAddTailsUsbSource, onScanLiveToCase, onDeleteSource, onBack, onExportCaseHtml, onExportCasePdf }) {
   const [activeTab, setActiveTab] = useState("sources");
   const { data_sources = [] } = caseData;
+  const chainOfCustody = caseData.chain_of_custody || [];
+  const auditLog = caseData.audit_log || [];
+
+  const shortHash = (h) => {
+    if (!h) return "-";
+    return h.length > 20 ? `${h.slice(0, 12)}...${h.slice(-8)}` : h;
+  };
+
+  const evidenceRows = data_sources.map((src) => {
+    const ev = src.evidence || {};
+    const prov = src.provenance || {};
+    return {
+      sourceId: src.id,
+      label: src.label || src.path,
+      path: src.path,
+      evidenceId: ev.evidence_id || "-",
+      acquiredAt: ev.acquisition_time || src.added_at,
+      sha256: ev.hashes?.sha256 || "",
+      sha1: ev.hashes?.sha1 || "",
+      extractionMethod: prov.extraction_method || "-",
+      originalPath: prov.original_path || src.path,
+      integrity: ev.hashes || {},
+    };
+  });
 
   const threatSummary = (src) => {
     const hi = src.report?.summary?.total_high ?? 0;
@@ -4723,6 +5441,12 @@ function CasePanel({ caseData, activeSourceId, onSelectSource, onAddSource, onAd
           <button className="btn-secondary btn-sm tails-btn" onClick={onAddTailsSource} title="Add source with dedicated TailsOS analysis" style={{ marginRight: 8 }}>
             <TailsLogo size="sm" /> Analyze TailsOS
           </button>
+          <button className="btn-secondary btn-sm" onClick={onExportCaseHtml} title="Export full case-level report as HTML" style={{ marginRight: 8 }}>
+            <FileText size={12} /> Case HTML
+          </button>
+          <button className="btn-secondary btn-sm" onClick={onExportCasePdf} title="Export full case-level report as PDF" style={{ marginRight: 8 }}>
+            <Download size={12} /> Case PDF
+          </button>
           <button className="btn-primary btn-sm" onClick={onAddSource}>
             <Plus size={13} /> Add Data Source
           </button>
@@ -4731,7 +5455,14 @@ function CasePanel({ caseData, activeSourceId, onSelectSource, onAddSource, onAd
 
       {/* Tab bar */}
       <div className="case-tabs">
-        {[["sources", HardDrive, "Data Sources"], ["info", Info, "Case Info"]].map(([id, Icon, label]) => (
+        {[
+          ["sources", HardDrive, "Data Sources"],
+          ["integrity", Hash, "Integrity"],
+          ["evidence", Hash, `Evidence (${evidenceRows.length})`],
+          ["custody", Shield, `Chain of Custody (${chainOfCustody.length})`],
+          ["audit", Activity, `Audit Log (${auditLog.length})`],
+          ["info", Info, "Case Info"],
+        ].map(([id, Icon, label]) => (
           <button key={id} className={`case-tab ${activeTab === id ? "active" : ""}`} onClick={() => setActiveTab(id)}>
             <Icon size={13} />{label}
           </button>
@@ -4793,6 +5524,133 @@ function CasePanel({ caseData, activeSourceId, onSelectSource, onAddSource, onAd
         </div>
       )}
 
+      {/* Integrity tab */}
+      {activeTab === "integrity" && (
+        <div className="case-info">
+          {evidenceRows.length === 0 ? (
+            <div className="cases-empty" style={{ paddingTop: 30 }}>
+              <Hash size={36} strokeWidth={1.2} className="cases-empty-icon" />
+              <p>No integrity records yet.</p>
+            </div>
+          ) : (
+            <div style={{ display: "grid", gap: 14 }}>
+              {evidenceRows.map((row) => {
+                const extraHashes = Object.entries(row.integrity).filter(([key]) => key !== "sha256" && key !== "sha1");
+                return (
+                  <div key={row.sourceId} style={{ border: "1px solid var(--border-lt)", borderRadius: "var(--radius)", padding: "12px 14px", background: "#fff" }}>
+                    <div style={{ marginBottom: 8 }}>
+                      <strong style={{ fontSize: 13 }}>{row.label}</strong>
+                    </div>
+                    <table className="rp-table" style={{ maxWidth: "100%" }}>
+                      <tbody>
+                        <tr><td>SHA256</td><td><code style={{ fontSize: 11, wordBreak: "break-all" }}>{row.sha256 || "-"}</code></td></tr>
+                        <tr><td>SHA1</td><td><code style={{ fontSize: 11, wordBreak: "break-all" }}>{row.sha1 || "-"}</code></td></tr>
+                        {extraHashes.map(([key, value]) => (
+                          <tr key={key}><td>{key.toUpperCase()}</td><td><code style={{ fontSize: 11, wordBreak: "break-all" }}>{value || "-"}</code></td></tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Evidence tab */}
+      {activeTab === "evidence" && (
+        <div className="case-info">
+          {evidenceRows.length === 0 ? (
+            <div className="cases-empty" style={{ paddingTop: 30 }}>
+              <Hash size={36} strokeWidth={1.2} className="cases-empty-icon" />
+              <p>No evidence records yet. Add a data source to generate integrity metadata.</p>
+            </div>
+          ) : (
+            <div style={{ display: "grid", gap: 14 }}>
+              {evidenceRows.map((row) => (
+                <div key={row.sourceId} style={{ border: "1px solid var(--border-lt)", borderRadius: "var(--radius)", padding: "12px 14px", background: "#fff" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                    <strong style={{ fontSize: 13 }}>{row.label}</strong>
+                    <span className="tag"><Hash size={10} /> {row.evidenceId}</span>
+                  </div>
+                  <table className="rp-table" style={{ maxWidth: "100%" }}>
+                    <tbody>
+                      <tr><td>Path</td><td style={{ wordBreak: "break-all" }}>{row.path}</td></tr>
+                      <tr><td>Acquired</td><td>{fmtDate(row.acquiredAt)}</td></tr>
+                      <tr><td>SHA256</td><td><code style={{ fontSize: 11 }}>{shortHash(row.sha256)}</code></td></tr>
+                      <tr><td>SHA1</td><td><code style={{ fontSize: 11 }}>{shortHash(row.sha1)}</code></td></tr>
+                      <tr><td>Extraction</td><td>{row.extractionMethod}</td></tr>
+                      <tr><td>Original Path</td><td style={{ wordBreak: "break-all" }}>{row.originalPath}</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Chain of custody tab */}
+      {activeTab === "custody" && (
+        <div className="case-info">
+          {chainOfCustody.length === 0 ? (
+            <div className="cases-empty" style={{ paddingTop: 30 }}>
+              <Shield size={36} strokeWidth={1.2} className="cases-empty-icon" />
+              <p>No chain-of-custody entries yet.</p>
+            </div>
+          ) : (
+            <div style={{ display: "grid", gap: 10 }}>
+              {chainOfCustody.map((ev, i) => (
+                <div key={`${ev.timestamp || "t"}-${ev.evidence_id || "ev"}-${i}`} style={{ border: "1px solid var(--border-lt)", borderRadius: "var(--radius)", padding: "10px 12px", background: "#fff" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                    <strong style={{ fontSize: 13 }}>{ev.action || "event"}</strong>
+                    <span className="tag"><Clock size={10} /> {fmtDate(ev.timestamp)}</span>
+                  </div>
+                  <div style={{ marginTop: 6, fontSize: 12, color: "var(--fg-muted)" }}>
+                    Evidence: <code>{ev.evidence_id || "-"}</code> | Collected by: {ev.collected_by || "-"} | Verified by: {ev.verified_by || "-"}
+                  </div>
+                  {ev.notes && <div style={{ marginTop: 6, fontSize: 12 }}>{ev.notes}</div>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Audit tab */}
+      {activeTab === "audit" && (
+        <div className="case-info">
+          {auditLog.length === 0 ? (
+            <div className="cases-empty" style={{ paddingTop: 30 }}>
+              <Activity size={36} strokeWidth={1.2} className="cases-empty-icon" />
+              <p>No audit log entries yet.</p>
+            </div>
+          ) : (
+            <table className="rp-table" style={{ maxWidth: "100%" }}>
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Actor</th>
+                  <th>Action</th>
+                  <th>Details</th>
+                </tr>
+              </thead>
+              <tbody>
+                {auditLog.map((ev, i) => (
+                  <tr key={`${ev.timestamp || "a"}-${ev.action || "action"}-${i}`}>
+                    <td>{fmtDate(ev.timestamp)}</td>
+                    <td>{ev.actor || "-"}</td>
+                    <td>{ev.action || "-"}</td>
+                    <td><code style={{ fontSize: 11 }}>{JSON.stringify(ev.details || {})}</code></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
       {/* Info tab */}
       {activeTab === "info" && (
         <div className="case-info">
@@ -4850,6 +5708,11 @@ function WorkspaceHome({ onAction }) {
           <span className="qa-icon"><Cpu size={28} strokeWidth={1.5} /></span>
           <span className="qa-label">Scan Live System</span>
           <span className="qa-hint">Ctrl+L</span>
+        </button>
+        <button className="qa-btn" onClick={() => onAction("remote_scan")}>
+          <span className="qa-icon"><Wifi size={28} strokeWidth={1.5} /></span>
+          <span className="qa-label">Remote Connect</span>
+          <span className="qa-hint">Ctrl+Shift+L</span>
         </button>
       </div>
       <p className="ws-tip">Use the <kbd>File</kbd> menu or toolbar to begin. Press <kbd>F1</kbd> for help.</p>
@@ -5792,20 +6655,101 @@ export default function App() {
     a.href = URL.createObjectURL(blob); a.download = "forensic_report.json"; a.click();
   }
 
+  function triggerBlobDownload(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+  }
+
+  async function exportComprehensive(format, variantOverride = null) {
+    if (!report) {
+      setStatus("No report to export");
+      return;
+    }
+
+    const variant = variantOverride || (activeCase ? "legal" : "comprehensive");
+    const intro = activeCase
+      ? `This report presents a case-level forensic narrative for ${activeCase.name || "the selected investigation"}. It consolidates findings from all attached evidence sources, highlights high-risk indicators, and documents chain-of-custody context for evidentiary review.`
+      : "This report presents a structured forensic narrative for the selected evidence source and highlights key indicators requiring analyst attention.";
+
+    const payload = {
+      report,
+      report_title: "OS Forensics Comprehensive Report",
+      case_name: activeCase?.name || "",
+      source_path: imgPath || "",
+      generated_by: "OSForensics UI",
+      case_data: activeCase || null,
+      intro_text: intro,
+      report_variant: variant,
+      include_raw_json: format === "html",
+    };
+
+    try {
+      const res = format === "pdf" ? await apiExportReportPdf(payload) : await apiExportReportHtml(payload);
+      const ext = format === "pdf" ? "pdf" : "html";
+      const fallback = `${(activeCase?.name || "forensics_report").replace(/[^a-z0-9_-]+/gi, "_")}.${ext}`;
+      triggerBlobDownload(res.blob, res.filename || fallback);
+      setStatus(`Comprehensive ${format.toUpperCase()} report exported`);
+    } catch (e) {
+      setStatus(`Failed to export ${format.toUpperCase()} report: ${String(e)}`);
+    }
+  }
+
+  async function exportCaseLevel(format, variantOverride = null) {
+    if (!activeCase) {
+      setStatus("No case selected");
+      return;
+    }
+
+    const sourceReports = (activeCase.data_sources || []).map((src) => src?.report).filter((r) => r && typeof r === "object");
+    const seedReport = sourceReports[0] || report || { os_info: {}, summary: {} };
+    const sourceCount = activeCase.data_sources?.length || 0;
+    const variant = variantOverride || "legal";
+    const intro = `Case-level forensic dossier for ${activeCase.name || "selected case"}. ` +
+      `This export aggregates outputs across ${sourceCount} source${sourceCount === 1 ? "" : "s"}, ` +
+      `including per-source indicators, integrity context, and case-level chain-of-custody/audit records.`;
+
+    const payload = {
+      report: seedReport,
+      report_title: `${activeCase.name || "Case"} - Case-Level Forensic Report`,
+      case_name: activeCase.name || "",
+      source_path: "",
+      generated_by: "OSForensics UI",
+      case_data: activeCase,
+      intro_text: intro,
+      report_variant: variant,
+      include_raw_json: format === "html",
+    };
+
+    try {
+      const res = format === "pdf" ? await apiExportReportPdf(payload) : await apiExportReportHtml(payload);
+      const ext = format === "pdf" ? "pdf" : "html";
+      const fallback = `${(activeCase.name || "case_report").replace(/[^a-z0-9_-]+/gi, "_")}_case_level.${ext}`;
+      triggerBlobDownload(res.blob, res.filename || fallback);
+      setStatus(`Case-level ${format.toUpperCase()} report exported`);
+    } catch (e) {
+      setStatus(`Failed to export case-level ${format.toUpperCase()} report: ${String(e)}`);
+    }
+  }
+
   function handleAction(key) {
     switch (key) {
-      case "analyze": return setDialog("analyze");
-      case "filepick": return setDialog("filepick");
-      case "live_scan": return setDialog("live_scan");
-      case "new_case": return setDialog("new_case");
-      case "view_cases": return setView("cases");
-      case "export": return report ? downloadJSON(report) : setStatus("No report to export");
-      case "clear": setReport(null); setImgPath(null); setLiveInfo(null); setActiveCase(null); setActiveSrcId(null); setView("home"); return setStatus("Analysis cleared");
-      case "settings": return setDialog("settings");
-      case "shortcuts": return setDialog("shortcuts");
-      case "about": return setDialog("about");
-      case "statusbar": return setStatbar(v => !v);
-      case "toolbar": return setToolbar(v => !v);
+      case "analyze":       return setDialog("analyze");
+      case "filepick":      return setDialog("filepick");
+      case "live_scan":     return setDialog("live_scan");
+      case "remote_scan":   return setDialog("remote_scan");
+      case "new_case":      return setDialog("new_case");
+      case "view_cases":    return setView("cases");
+      case "export":        return report ? downloadJSON(report) : setStatus("No report to export");
+      case "clear":         setReport(null); setImgPath(null); setLiveInfo(null); setActiveCase(null); setActiveSrcId(null); setView("home"); return setStatus("Analysis cleared");
+      case "settings":      return setDialog("settings");
+      case "shortcuts":     return setDialog("shortcuts");
+      case "about":         return setDialog("about");
+      case "statusbar":     return setStatbar(v => !v);
+      case "toolbar":       return setToolbar(v => !v);
       case "view_explorer": return imgPath ? setView("explorer") : setStatus("Open an image first");
       case "view_report": return report ? setView("report") : setStatus("Run analysis first");
       case "explorer": return imgPath ? setView("explorer") : setStatus("Open an image first");
@@ -5818,7 +6762,8 @@ export default function App() {
     function onKey(e) {
       if (e.ctrlKey && e.key === "o") { e.preventDefault(); handleAction("analyze"); }
       if (e.ctrlKey && e.key === "b") { e.preventDefault(); handleAction("filepick"); }
-      if (e.ctrlKey && e.key === "l") { e.preventDefault(); handleAction("live_scan"); }
+      if (e.ctrlKey && e.shiftKey && (e.key === "L" || e.key === "l")) { e.preventDefault(); handleAction("remote_scan"); return; }
+      if (e.ctrlKey && !e.shiftKey && (e.key === "L" || e.key === "l")) { e.preventDefault(); handleAction("live_scan"); }
       if (e.ctrlKey && e.key === ",") { e.preventDefault(); handleAction("settings"); }
       if (e.key === "F1") { e.preventDefault(); handleAction("about"); }
     }
@@ -5840,6 +6785,9 @@ export default function App() {
         {!activeCase && imgPath && imgPath !== "/" && <span className="title-path">{imgPath}</span>}
         {!activeCase && imgPath === "/" && (
           <span className="title-live-badge"><Cpu size={11} /> LIVE SYSTEM</span>
+        )}
+        {!activeCase && String(imgPath || "").startsWith("ssh://") && (
+          <span className="title-live-badge"><Wifi size={11} /> REMOTE LIVE</span>
         )}
         {liveScanning && <span className="title-live-scanning"><RefreshCw size={11} className="spin" /> Scanning live system…</span>}
       </div>
@@ -5886,6 +6834,8 @@ export default function App() {
                   if (activeSrcId === srcId) { setActiveSrcId(null); setReport(null); setImgPath(null); }
                 } catch (e) { setStatus("Failed to remove source: " + String(e)); }
               }}
+              onExportCaseHtml={() => exportCaseLevel("html")}
+              onExportCasePdf={() => exportCaseLevel("pdf")}
               onBack={() => setView("cases")}
             />
           )}
@@ -5897,10 +6847,13 @@ export default function App() {
           {view === "report" && report && (
             <ReportPanel
               report={report}
-              liveInfo={imgPath === "/" ? liveInfo : null}
+              liveInfo={imgPath === "/" || report?.summary?.analysis_mode === "remote_ssh_live" ? liveInfo : null}
               imgPath={imgPath}
               onClear={() => handleAction("clear")}
-              onExport={() => downloadJSON(report)}
+              onExportJson={() => downloadJSON(report)}
+              onExportHtml={() => exportComprehensive("html")}
+              onExportPdf={() => exportComprehensive("pdf")}
+              onExportExecutivePdf={() => exportComprehensive("pdf", "executive")}
               onReanalyze={handleReanalyze}
               reanalyzing={reanalyzing}
             />
@@ -5916,6 +6869,16 @@ export default function App() {
         <LiveScanDialog
           onClose={closeDialog}
           onResult={(r, path, info) => { handleResult(r, path); setLiveInfo(info); closeDialog(); }}
+        />
+      )}
+      {dialog === "remote_scan" && (
+        <RemoteScanDialog
+          onClose={closeDialog}
+          onResult={(r, path, info) => {
+            handleResult(r, path);
+            setLiveInfo(info || null);
+            closeDialog();
+          }}
         />
       )}
       {dialog === "live_scan_case" && activeCase && (

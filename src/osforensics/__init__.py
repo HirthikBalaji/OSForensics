@@ -36,4 +36,5 @@ __all__ = [
     "CONFIG_TOOLS",
     "MULTIMEDIA_TOOLS",
     "TAILS_TOOLS",
+    "container",
 ]
