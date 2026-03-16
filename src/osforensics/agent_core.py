@@ -40,7 +40,7 @@ from . import agent_tools as tools
 
 # ── Gemini configuration ───────────────────────────────────────────────────────
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyDMYOze-eeaG3PmG213b9gIvKkcR8YMxsw")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 DEFAULT_MODEL  = os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview")
 MAX_OBS_CHARS  = 4000   # truncate large tool outputs before re-feeding to LLM
 

@@ -60,6 +60,7 @@ const apiMediaUrl = (imgPath, filePath) =>
 // ── Agent API ─────────────────────────────────────────────────────────────────
 const apiAgentStatus = () => get("/agent/status");
 const apiAgentReset = (sid) => fetch(`${API}/agent/reset/${sid}`, { method: "POST" }).then(r => r.json());
+const apiTimelineAI = (events) => post("/timeline/ai-analysis", { events });
 
 // ─── Severity / icon helpers ──────────────────────────────────────────────────
 const SEV_COLOR = { critical: "#7f1d1d", high: "#dc2626", medium: "#d97706", low: "#16a34a", info: "#2563eb" };
@@ -2032,6 +2033,129 @@ function LogSection({ title, sources, events }) {
   );
 }
 
+// ── AI Timeline Analysis Component ───────────────────────────────────────────
+function AITimelineAnalysis({ events }) {
+  const [analysis, setAnalysis] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const runAnalysis = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await apiTimelineAI(events);
+      if (res.error) setError(res.error);
+      else setAnalysis(res);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="ai-tl-container">
+      {!analysis && !loading && (
+        <div className="ai-tl-init">
+          <Bot size={32} style={{ color: "#6366f1", marginBottom: 12 }} />
+          <h3>AI Timeline Reconstruction</h3>
+          <p>Analyze {events.length} events to reconstruct the attack sequence and predict goals.</p>
+          <button className="ai-tl-btn" onClick={runAnalysis}>
+            <Zap size={14} /> Generate AI Insights
+          </button>
+        </div>
+      )}
+
+      {loading && (
+        <div className="ai-tl-loading">
+          <Loader2 size={32} className="spin" style={{ color: "#6366f1", marginBottom: 12 }} />
+          <p>Analyzing timeline patterns and TTPs...</p>
+        </div>
+      )}
+
+      {error && (
+        <div className="ai-tl-error">
+          <AlertTriangle size={24} style={{ color: "#dc2626", marginBottom: 8 }} />
+          <p>{error}</p>
+          <button className="ai-tl-btn" onClick={runAnalysis}>Retry Analysis</button>
+        </div>
+      )}
+
+      {analysis && (
+        <div className="ai-tl-results">
+          <div className="ai-tl-header">
+            <Bot size={18} />
+            <h2>AI Forensic Reconstruction</h2>
+            <button className="ai-tl-btn-mini" onClick={runAnalysis} title="Re-analyze">
+              <RefreshCw size={12} />
+            </button>
+          </div>
+
+          <div className="ai-tl-grid">
+            <div className="ai-tl-main">
+              <section className="ai-tl-section">
+                <h3><Activity size={14} /> Probable Attack Sequence</h3>
+                <div className="ai-sequence">
+                  {analysis.attack_sequence?.map((step, i) => (
+                    <div key={i} className="ai-seq-step" style={{ borderLeftColor: SEV_COLOR[step.severity] || "#6b7280" }}>
+                      <div className="ai-seq-phase">
+                        <span className="ai-seq-pill" style={{ background: SEV_BG[step.severity], color: SEV_COLOR[step.severity] }}>
+                          {step.phase}
+                        </span>
+                        <SevBadge sev={step.severity} />
+                      </div>
+                      <p className="ai-seq-desc">{step.description}</p>
+                      <div className="ai-seq-events">
+                        {step.event_indices?.slice(0, 5).map(idx => (
+                          <span key={idx} className="ai-seq-ev-tag" title={events[idx]?.detail}>
+                            Event #{idx}
+                          </span>
+                        ))}
+                        {step.event_indices?.length > 5 && <span className="ai-seq-ev-more">+{step.event_indices.length - 5} more</span>}
+                      </div>
+                    </div>
+                  ))}
+                  {(!analysis.attack_sequence || analysis.attack_sequence.length === 0) && (
+                    <div className="ai-empty-note">No discrete attack phases identified.</div>
+                  )}
+                </div>
+              </section>
+
+              <section className="ai-tl-section">
+                <h3><Info size={14} /> Analyst Insights</h3>
+                <div className="ai-insights-box">
+                  {analysis.insights}
+                </div>
+              </section>
+            </div>
+
+            <div className="ai-tl-side">
+              <section className="ai-tl-section ai-prediction-card">
+                <h3><Eye size={14} /> Attack Prediction</h3>
+                <div className="ai-pred-item">
+                  <label>Likely Goal</label>
+                  <div className="ai-pred-goal">{analysis.attack_prediction?.likely_goal}</div>
+                </div>
+                <div className="ai-pred-item">
+                  <label>Next Steps / Risks</label>
+                  <ul className="ai-pred-list">
+                    {analysis.attack_prediction?.next_steps?.map((s, i) => <li key={i}>{s}</li>)}
+                  </ul>
+                </div>
+                <div className="ai-pred-footer">
+                  <span className="ai-confidence">
+                    Confidence: <strong className={`conf-${analysis.attack_prediction?.confidence}`}>{analysis.attack_prediction?.confidence}</strong>
+                  </span>
+                </div>
+              </section>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Timeline Tab (source-nav + sections) ──────────────────────────────────────
 function TimelineTab({ events = [], dateRangeMs }) {
   const [source, setSource] = useState("bash");
@@ -2049,6 +2173,7 @@ function TimelineTab({ events = [], dateRangeMs }) {
     { id: "bash", label: "Bash History", Icon: Terminal, badge: bashHigh },
     { id: "auth", label: "Auth Log", Icon: Lock, badge: authHigh, count: authEvs.length },
     { id: "syslog", label: "System Log", Icon: Server, badge: sysHigh, count: sysEvs.length },
+    { id: "ai", label: "AI Insights", Icon: Bot, badge: 0 },
   ];
 
   return (
@@ -2072,6 +2197,7 @@ function TimelineTab({ events = [], dateRangeMs }) {
         {source === "bash" && <BashHistorySection events={events} dateRangeMs={dateRangeMs} />}
         {source === "auth" && <LogSection title="Auth Log" sources={["auth.log", "secure"]} events={events} />}
         {source === "syslog" && <LogSection title="System Log" sources={["syslog", "messages"]} events={events} />}
+        {source === "ai" && <AITimelineAnalysis events={events} />}
       </div>
     </div>
   );

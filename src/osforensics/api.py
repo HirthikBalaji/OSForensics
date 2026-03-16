@@ -61,6 +61,7 @@ from .report import build_report
 from .services import detect_services
 from .tails import analyze_tails
 from .timeline import build_timeline
+from .ai_timeline import analyze_timeline_ai
 
 
 class AnalyzeRequest(BaseModel):
@@ -85,6 +86,10 @@ class CarveRequest(BaseModel):
     sig_groups: Optional[list] = None   # None = all groups
     max_files: int = 200
     max_scan_gb: float = 2.0            # scan ceiling in GB
+
+
+class AIAnalyzeTimelineRequest(BaseModel):
+    events: list[dict]
 
 
 app = FastAPI(title="OS Forensics API")
@@ -204,6 +209,15 @@ def timeline_scan(req: AnalyzeRequest):
         raise HTTPException(status_code=400, detail=str(e))
     try:
         return {"timeline": build_timeline(fs)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
+
+
+@app.post("/timeline/ai-analysis")
+def timeline_ai_analysis(req: AIAnalyzeTimelineRequest):
+    """Deep AI analysis of timeline events for attack sequences and predictions."""
+    try:
+        return analyze_timeline_ai(req.events)
     except Exception as e:
         raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
 
