@@ -34,18 +34,19 @@ from typing import Any, Dict, Generator, List, Optional, Tuple
 
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
-
+from dotenv import load_dotenv
+load_dotenv(".env")
 from . import agent_memory as memory
 from . import agent_tools as tools
 
 # ── Gemini configuration ───────────────────────────────────────────────────────
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-DEFAULT_MODEL  = os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY","AIzaSyDev1aIHB9AgmSYNMf2eP2sz_3_3hA4OD0")
+DEFAULT_MODEL  = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
 MAX_OBS_CHARS  = 4000   # truncate large tool outputs before re-feeding to LLM
 
 # ── Rate-limit / retry config ──────────────────────────────────────────────────
-_RETRY_MAX      = int(os.environ.get("GEMINI_RETRY_MAX",      "4"))   # attempts
+_RETRY_MAX      = int(os.getenv("GEMINI_RETRY_MAX",      "4"))   # attempts
 _RETRY_BASE_SEC = float(os.environ.get("GEMINI_RETRY_BASE",  "5.0"))  # initial back-off
 _RETRY_CAP_SEC  = float(os.environ.get("GEMINI_RETRY_CAP", "120.0"))  # max back-off
 

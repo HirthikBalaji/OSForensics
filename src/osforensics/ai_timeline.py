@@ -39,6 +39,7 @@ If no suspicious activity is found, state that the system appears clean but stil
 
 def analyze_timeline_ai(events: List[Dict]) -> Dict:
     """Send timeline events to Gemini for attack reconstruction and prediction."""
+    print(f"DEBUG: Starting AI timeline analysis for {len(events)} events")
     agent = get_agent()
     client = agent._get_client()
     
@@ -62,9 +63,14 @@ def analyze_timeline_ai(events: List[Dict]) -> Dict:
     history = [{"role": "user", "parts": [prompt]}]
     
     try:
+        print("DEBUG: Sending request to Gemini...")
         raw_response = _gemini_chat(history, TIMELINE_AI_SYSTEM, client)
-        return _parse_json(raw_response)
+        print(f"DEBUG: Received response from Gemini ({len(raw_response)} chars)")
+        result = _parse_json(raw_response)
+        print("DEBUG: Successfully parsed Gemini response")
+        return result
     except Exception as e:
+        print(f"DEBUG: AI analysis failed error: {e}")
         logger.error(f"Timeline AI analysis failed: {e}")
         return {
             "error": f"AI analysis failed: {str(e)}",
