@@ -547,6 +547,28 @@ class SSHAnalyzeRequest(BaseModel):
     multimedia:  bool = False
 
 
+class SSHFSMountAnalyzeRequest(BaseModel):
+    host: str
+    username: str
+    port: int = 22
+    password: Optional[str] = None
+    key_path: Optional[str] = None
+    key_passphrase: Optional[str] = None
+
+    # Remote directory to mount for analysis.
+    remote_path: str = "/"
+    connect_timeout: int = 10
+
+    # Scan toggles aligned with local live scan.
+    timeline:    bool = True
+    deleted:     bool = True
+    persistence: bool = True
+    config:      bool = True
+    services:    bool = True
+    browsers:    bool = True
+    multimedia:  bool = False
+
+
 def _ssh_analysis(req: SSHAnalyzeRequest) -> dict:
     """Acquire a bounded remote snapshot over SSH, then analyze it locally."""
     tmp_dir = tempfile.mkdtemp(prefix="osforensics_ssh_")
@@ -618,6 +640,178 @@ def _ssh_analysis(req: SSHAnalyzeRequest) -> dict:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def _try_unmount(path: str) -> Optional[str]:
+    """Best-effort unmount helper for FUSE mounts."""
+    attempts = [
+        ["fusermount", "-u", path],
+        ["umount", path],
+    ]
+    errors = []
+    for cmd in attempts:
+        bin_name = cmd[0]
+        if shutil.which(bin_name) is None:
+            continue
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=10)
+            return None
+        except Exception as e:
+            errors.append(f"{' '.join(cmd)}: {e}")
+    if not errors:
+        return "No unmount tool found (fusermount/umount)"
+    return "; ".join(errors)
+
+
+def _sshfs_analysis(req: SSHFSMountAnalyzeRequest) -> dict:
+    """Mount a remote path via SSHFS, analyze it, then unmount."""
+    if shutil.which("sshfs") is None:
+        raise RemoteSnapshotError("sshfs is not installed on the backend host")
+
+    using_password = bool((req.password or "").strip())
+
+    mount_dir = tempfile.mkdtemp(prefix="osforensics_sshfs_")
+    mounted = False
+    unmount_warning = None
+
+    try:
+        remote_path = (req.remote_path or "/").strip() or "/"
+        if not remote_path.startswith("/"):
+            remote_path = f"/{remote_path}"
+
+        remote_spec = f"{req.username}@{req.host}:{remote_path}"
+        mount_cmd = [
+            "sshfs",
+            remote_spec,
+            mount_dir,
+            "-p", str(req.port),
+            "-o", "ro",
+            "-o", f"ConnectTimeout={max(2, req.connect_timeout)}",
+            "-o", "ServerAliveInterval=15",
+            "-o", "ServerAliveCountMax=3",
+            "-o", "StrictHostKeyChecking=accept-new",
+        ]
+
+        key_path = (req.key_path or "").strip()
+        if key_path:
+            expanded_key = os.path.expanduser(key_path)
+            mount_cmd += ["-o", f"IdentityFile={expanded_key}", "-o", "BatchMode=yes"]
+
+        timeout = max(15, req.connect_timeout + 10)
+        if using_password:
+            # Prefer native sshfs password input to avoid requiring sshpass.
+            pwd_cmd = mount_cmd + ["-o", "password_stdin"]
+            result = subprocess.run(
+                pwd_cmd,
+                input=(req.password or "") + "\n",
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            if result.returncode != 0:
+                err = (result.stderr or result.stdout or "sshfs mount failed").strip()
+                # Some sshfs builds may not support password_stdin.
+                if "password_stdin" in err.lower() and shutil.which("sshpass") is not None:
+                    result = subprocess.run(
+                        ["sshpass", "-p", req.password] + mount_cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout,
+                    )
+                    if result.returncode != 0:
+                        err = (result.stderr or result.stdout or "sshfs mount failed").strip()
+                        raise RemoteSnapshotError(err)
+                elif "password_stdin" in err.lower() and shutil.which("sshpass") is None:
+                    raise RemoteSnapshotError(
+                        "This sshfs build does not support password_stdin. "
+                        "Install sshpass on backend host or use key-based auth."
+                    )
+                else:
+                    raise RemoteSnapshotError(err)
+        else:
+            result = subprocess.run(
+                mount_cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            if result.returncode != 0:
+                err = (result.stderr or result.stdout or "sshfs mount failed").strip()
+                raise RemoteSnapshotError(err)
+        mounted = True
+
+        fs = FilesystemAccessor(mount_dir)
+        os_info    = detect_os(fs)
+        findings   = detect_tools(fs)
+        classified = classify_findings(findings)
+        timeline    = build_timeline(fs)      if req.timeline    else []
+        deleted     = detect_deleted(fs)      if req.deleted     else []
+        persistence = detect_persistence(fs)  if req.persistence else []
+        config      = analyze_configs(fs)     if req.config      else []
+        services    = detect_services(fs)     if req.services    else []
+        browsers    = detect_browsers(fs)     if req.browsers    else []
+        multimedia  = analyze_multimedia(fs)  if req.multimedia  else []
+        tails       = analyze_tails(fs, tool_findings=classified)
+        containers  = analyze_containers(fs)
+        report = build_report(
+            os_info,
+            classified,
+            timeline=timeline,
+            deleted=deleted,
+            persistence=persistence,
+            config=config,
+            services=services,
+            browsers=browsers,
+            multimedia=multimedia,
+            tails=tails,
+            containers=containers,
+        )
+        out = report.dict()
+        out.setdefault("summary", {})["analysis_mode"] = "remote_sshfs_mount"
+        out["remote_target"] = {
+            "host": req.host,
+            "port": req.port,
+            "username": req.username,
+            "scheme": "sshfs",
+            "remote_path": remote_path,
+        }
+        try:
+            info = collect_remote_host_info(
+                host=req.host,
+                username=req.username,
+                port=req.port,
+                password=req.password,
+                key_path=req.key_path,
+                key_passphrase=req.key_passphrase,
+                connect_timeout=max(2, req.connect_timeout),
+            )
+            out["live_info"] = info
+        except Exception:
+            out["live_info"] = {
+                "hostname": req.host,
+                "os_name": out.get("os_info", {}).get("name") or "Linux",
+                "kernel": "unknown",
+                "uptime_str": "-",
+                "load_avg": [],
+                "memory": {"total_kb": 0, "available_kb": 0, "used_pct": 0},
+                "interfaces": [],
+                "process_count": 0,
+                "users": [req.username],
+                "scheme": "remote_ssh",
+            }
+        out["acquisition"] = {
+            "mode": "sshfs_mount",
+            "mountpoint": mount_dir,
+            "remote_path": remote_path,
+            "readonly": True,
+        }
+        return out
+    finally:
+        if mounted:
+            unmount_warning = _try_unmount(mount_dir)
+        if unmount_warning:
+            print(f"[osforensics] WARNING: failed to unmount {mount_dir}: {unmount_warning}")
+        shutil.rmtree(mount_dir, ignore_errors=True)
+
+
 @app.post("/analyze/live")
 def analyze_live(req: LiveScanRequest = None):
     """Forensic analysis of the running host system. Accepts optional scan-type flags."""
@@ -634,6 +828,17 @@ def analyze_ssh(req: SSHAnalyzeRequest):
     """Run remote live forensics by acquiring a bounded SSH snapshot first."""
     try:
         return _ssh_analysis(req)
+    except RemoteSnapshotError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
+
+
+@app.post("/analyze/sshfs")
+def analyze_sshfs(req: SSHFSMountAnalyzeRequest):
+    """Run remote live forensics by auto-mounting the remote path via SSHFS."""
+    try:
+        return _sshfs_analysis(req)
     except RemoteSnapshotError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -1021,6 +1226,32 @@ def cases_analyze_ssh(case_id: str, req: SSHAnalyzeRequest):
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
         label = f"Remote SSH ({req.username}@{req.host}:{req.port}) [{ts}]"
         source_path = f"ssh://{req.username}@{req.host}:{req.port}"
+        source = add_data_source(case_id, source_path, label, report)
+        return {"source": source, "report": report}
+    except RemoteSnapshotError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
+
+
+@app.post("/cases/{case_id}/analyze/sshfs")
+def cases_analyze_sshfs(case_id: str, req: SSHFSMountAnalyzeRequest):
+    """Run remote SSHFS-mounted scan and save results under the selected case."""
+    try:
+        get_case(case_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    try:
+        report = _sshfs_analysis(req)
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
+        remote_path = (req.remote_path or "/").strip() or "/"
+        if not remote_path.startswith("/"):
+            remote_path = f"/{remote_path}"
+        label = f"Remote SSHFS ({req.username}@{req.host}:{req.port}{remote_path}) [{ts}]"
+        source_path = f"sshfs://{req.username}@{req.host}:{req.port}{remote_path}"
         source = add_data_source(case_id, source_path, label, report)
         return {"source": source, "report": report}
     except RemoteSnapshotError as e:

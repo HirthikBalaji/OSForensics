@@ -34,6 +34,7 @@ const get = async (url) => {
 const apiAnalyze     = (path)       => post("/analyze",        { image_path: path });
 const apiAnalyzeLive = (scanTypes)   => post("/analyze/live",  scanTypes || {});
 const apiAnalyzeSsh  = (body)        => post("/analyze/ssh",   body);
+const apiAnalyzeSshfs = (body)       => post("/analyze/sshfs", body);
 const apiSshInfo     = (body)        => post("/analyze/ssh/info", body);
 const apiLiveInfo    = ()            => get("/live/info");
 const apiFsBrowse    = (path)        => post("/fs/browse",      { path });
@@ -591,6 +592,8 @@ function LiveScanDialog({ onClose, onResult, runScan, title = "Scan Live System"
 
 function RemoteScanDialog({ onClose, onResult, runScan, title = "Remote Connect & Live Scan" }) {
   const defaults = Object.fromEntries(SCAN_TYPES.map(t => [t.key, t.default]));
+  const [mode, setMode] = useState("ssh_snapshot");
+    const [mountedPath, setMountedPath] = useState("/");
   const [host, setHost] = useState("");
   const [username, setUsername] = useState("");
   const [port, setPort] = useState(22);
@@ -607,7 +610,9 @@ function RemoteScanDialog({ onClose, onResult, runScan, title = "Remote Connect 
 
   const toggle = (key) => setTypes(prev => ({ ...prev, [key]: !prev[key] }));
   const anyOn = Object.values(types).some(Boolean);
-  const canRun = host.trim() && username.trim() && anyOn;
+  const canRun = mode === "mounted_path"
+    ? !!host.trim() && !!username.trim() && !!mountedPath.trim()
+    : !!host.trim() && !!username.trim() && anyOn;
 
   async function run() {
     setLoading(true);
@@ -615,6 +620,43 @@ function RemoteScanDialog({ onClose, onResult, runScan, title = "Remote Connect 
     setConnectedInfo(null);
     setErr(null);
     try {
+      if (mode === "mounted_path") {
+        const authBody = {
+          host: host.trim(),
+          username: username.trim(),
+          port: Number(port) || 22,
+          connect_timeout: 10,
+        };
+        if (authMode === "password") {
+          authBody.password = password;
+        } else {
+          authBody.key_path = keyPath.trim();
+          if (keyPassphrase.trim()) authBody.key_passphrase = keyPassphrase;
+        }
+
+        const info = await apiSshInfo(authBody);
+        setConnectedInfo(info);
+        setStep("scanning");
+
+        const body = {
+          ...authBody,
+          remote_path: mountedPath.trim(),
+        };
+
+        let mountedResult;
+        if (runScan) {
+          mountedResult = await runScan({ mode: "mounted_path", ...body });
+        } else {
+          mountedResult = await apiAnalyzeSshfs(body);
+        }
+        const mountedReport = mountedResult?.report || mountedResult;
+        const mountedInfo = mountedResult?.live_info || mountedResult?.info || info || null;
+        const sourcePath = `sshfs://${authBody.username}@${authBody.host}:${authBody.port}${body.remote_path}`;
+        onResult(mountedReport, sourcePath, mountedInfo, mountedResult?.source || null);
+        onClose();
+        return;
+      }
+
       const include = includePaths
         .split(/[\n,]/)
         .map((s) => s.trim())
@@ -679,73 +721,142 @@ function RemoteScanDialog({ onClose, onResult, runScan, title = "Remote Connect 
     <Modal title={title} onClose={onClose} width={560}>
       <div className="lsd-body">
         <div className="dlg-field">
-          <label>Remote Host</label>
-          <input autoFocus value={host} onChange={(e) => setHost(e.target.value)} placeholder="192.168.56.10 or server.example.com" />
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 120px", gap: 10 }}>
-          <div className="dlg-field">
-            <label>Username</label>
-            <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="forensic" />
-          </div>
-          <div className="dlg-field">
-            <label>Port</label>
-            <input type="number" min="1" max="65535" value={port} onChange={(e) => setPort(e.target.value)} />
-          </div>
-        </div>
-
-        <div className="dlg-field">
-          <label>Authentication</label>
+          <label>Mode</label>
           <div style={{ display: "flex", gap: 10, fontSize: 12 }}>
-            <label><input type="radio" checked={authMode === "key"} onChange={() => setAuthMode("key")} /> SSH Key</label>
-            <label><input type="radio" checked={authMode === "password"} onChange={() => setAuthMode("password")} /> Password</label>
+            <label><input type="radio" checked={mode === "ssh_snapshot"} onChange={() => setMode("ssh_snapshot")} /> SSH Snapshot</label>
+            <label><input type="radio" checked={mode === "mounted_path"} onChange={() => setMode("mounted_path")} /> Mounted Path</label>
           </div>
         </div>
 
-        {authMode === "key" ? (
+        {mode === "ssh_snapshot" ? (
           <>
             <div className="dlg-field">
-              <label>Key Path</label>
-              <input value={keyPath} onChange={(e) => setKeyPath(e.target.value)} placeholder="~/.ssh/id_ed25519" />
+              <label>Remote Host</label>
+              <input autoFocus value={host} onChange={(e) => setHost(e.target.value)} placeholder="192.168.56.10 or server.example.com" />
             </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 120px", gap: 10 }}>
+              <div className="dlg-field">
+                <label>Username</label>
+                <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="forensic" />
+              </div>
+              <div className="dlg-field">
+                <label>Port</label>
+                <input type="number" min="1" max="65535" value={port} onChange={(e) => setPort(e.target.value)} />
+              </div>
+            </div>
+
             <div className="dlg-field">
-              <label>Key Passphrase (optional)</label>
-              <input type="password" value={keyPassphrase} onChange={(e) => setKeyPassphrase(e.target.value)} placeholder="Optional" />
+              <label>Authentication</label>
+              <div style={{ display: "flex", gap: 10, fontSize: 12 }}>
+                <label><input type="radio" checked={authMode === "key"} onChange={() => setAuthMode("key")} /> SSH Key</label>
+                <label><input type="radio" checked={authMode === "password"} onChange={() => setAuthMode("password")} /> Password</label>
+              </div>
+            </div>
+
+            {authMode === "key" ? (
+              <>
+                <div className="dlg-field">
+                  <label>Key Path</label>
+                  <input value={keyPath} onChange={(e) => setKeyPath(e.target.value)} placeholder="~/.ssh/id_ed25519" />
+                </div>
+                <div className="dlg-field">
+                  <label>Key Passphrase (optional)</label>
+                  <input type="password" value={keyPassphrase} onChange={(e) => setKeyPassphrase(e.target.value)} placeholder="Optional" />
+                </div>
+              </>
+            ) : (
+              <div className="dlg-field">
+                <label>Password</label>
+                <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Remote account password" />
+              </div>
+            )}
+
+            <div className="dlg-field">
+              <label>Include Paths (comma/newline separated)</label>
+              <textarea rows={2} value={includePaths} onChange={(e) => setIncludePaths(e.target.value)} />
+            </div>
+
+            <div className="lsd-checks">
+              {SCAN_TYPES.map(({ key, label, hint }) => (
+                <label key={key} className="lsd-check">
+                  <input type="checkbox" checked={!!types[key]} onChange={() => toggle(key)} />
+                  <span className="lsd-check-info">
+                    <span className="lsd-check-label">{label}</span>
+                    <span className="lsd-check-hint">{hint}</span>
+                  </span>
+                </label>
+              ))}
             </div>
           </>
         ) : (
-          <div className="dlg-field">
-            <label>Password</label>
-            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Remote account password" />
-          </div>
+          <>
+            <div className="dlg-field">
+              <label>Remote Host</label>
+              <input autoFocus value={host} onChange={(e) => setHost(e.target.value)} placeholder="192.168.56.10 or server.example.com" />
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 120px", gap: 10 }}>
+              <div className="dlg-field">
+                <label>Username</label>
+                <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="forensic" />
+              </div>
+              <div className="dlg-field">
+                <label>Port</label>
+                <input type="number" min="1" max="65535" value={port} onChange={(e) => setPort(e.target.value)} />
+              </div>
+            </div>
+
+            <div className="dlg-field">
+              <label>Authentication</label>
+              <div style={{ display: "flex", gap: 10, fontSize: 12 }}>
+                <label><input type="radio" checked={authMode === "key"} onChange={() => setAuthMode("key")} /> SSH Key</label>
+                <label><input type="radio" checked={authMode === "password"} onChange={() => setAuthMode("password")} /> Password</label>
+              </div>
+            </div>
+
+            {authMode === "key" ? (
+              <>
+                <div className="dlg-field">
+                  <label>Key Path</label>
+                  <input value={keyPath} onChange={(e) => setKeyPath(e.target.value)} placeholder="~/.ssh/id_ed25519" />
+                </div>
+                <div className="dlg-field">
+                  <label>Key Passphrase (optional)</label>
+                  <input type="password" value={keyPassphrase} onChange={(e) => setKeyPassphrase(e.target.value)} placeholder="Optional" />
+                </div>
+              </>
+            ) : (
+              <div className="dlg-field">
+                <label>Password</label>
+                <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Remote account password" />
+              </div>
+            )}
+
+            <div className="dlg-field">
+              <label>Remote Path To Mount</label>
+              <input value={mountedPath} onChange={(e) => setMountedPath(e.target.value)} placeholder="/" />
+            </div>
+            <div className="dlg-note">
+              Backend auto-mounts this path with SSHFS, runs analysis, then unmounts automatically.
+            </div>
+          </>
         )}
-
-        <div className="dlg-field">
-          <label>Include Paths (comma/newline separated)</label>
-          <textarea rows={2} value={includePaths} onChange={(e) => setIncludePaths(e.target.value)} />
-        </div>
-
-        <div className="lsd-checks">
-          {SCAN_TYPES.map(({ key, label, hint }) => (
-            <label key={key} className="lsd-check">
-              <input type="checkbox" checked={!!types[key]} onChange={() => toggle(key)} />
-              <span className="lsd-check-info">
-                <span className="lsd-check-label">{label}</span>
-                <span className="lsd-check-hint">{hint}</span>
-              </span>
-            </label>
-          ))}
-        </div>
       </div>
-      {step === "connecting" && !err && (
+      {mode === "ssh_snapshot" && step === "connecting" && !err && (
         <div className="dlg-note">Connecting to {host.trim() || "remote host"}...</div>
       )}
-      {step === "scanning" && connectedInfo && !err && (
+      {mode === "mounted_path" && step === "connecting" && !err && (
+        <div className="dlg-note">Connecting to {host.trim() || "remote host"} for backend mount...</div>
+      )}
+      {mode === "mounted_path" && step === "scanning" && connectedInfo && !err && (
+        <div className="dlg-note">Connected to {connectedInfo.hostname || host.trim()} ({connectedInfo.os_name || "Linux"}). Mounting {mountedPath.trim() || "/"} and running analysis...</div>
+      )}
+      {mode === "ssh_snapshot" && step === "scanning" && connectedInfo && !err && (
         <div className="dlg-note">Connected to {connectedInfo.hostname || host.trim()} ({connectedInfo.os_name || "Linux"}). Downloading snapshot and running analysis...</div>
       )}
       {err && <div className="dlg-error">{err}</div>}
       <div className="dlg-actions">
         <button className="btn-primary" onClick={run} disabled={loading || !canRun}>
-          <Wifi size={14} />{loading ? (step === "scanning" ? "Scanning..." : "Connecting...") : "Connect & Scan"}
+          <Wifi size={14} />{loading ? (step === "scanning" ? "Scanning..." : "Connecting...") : (mode === "mounted_path" ? "Mount & Scan" : "Connect & Scan")}
         </button>
         <button className="btn-secondary" onClick={onClose}>Cancel</button>
       </div>
