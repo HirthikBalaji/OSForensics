@@ -5,6 +5,7 @@ an on-disk mounted directory (for development) or a disk image file (dd, etc.).
 
 Extended endpoints:
   POST /analyze           – full analysis (tools + timeline + deleted + persistence + config + services + browsers + multimedia)
+    POST /analyze/ssh       – remote live analysis via SSH snapshot acquisition
   POST /upload            – upload a disk image, analyse, then delete temporary file
   POST /timeline          – timeline-only scan for a given path
   POST /deleted           – deleted-file scan for a given path
@@ -16,6 +17,7 @@ Extended endpoints:
   POST /browsers          – browser forensics (history, bookmarks, cookies, extensions …)
   POST /multimedia        – multimedia forensics (EXIF, GPS, steganography, tampering …)
     POST /analyze/tails     – full analysis with dedicated Tails OS heuristics
+    POST /cases/{id}/analyze/ssh   – remote live analysis saved as a case source
     POST /cases/{id}/analyze/tails – same as above but saved under a case source
 
 Explorer endpoints (Autopsy-style navigation):
@@ -27,6 +29,7 @@ Explorer endpoints (Autopsy-style navigation):
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 import shutil
@@ -47,17 +50,20 @@ from .agent_core import get_agent
 from .browser import detect_browsers
 from .cases import (
     list_cases, create_case, get_case, update_case, delete_case,
-    add_data_source, remove_data_source,
+    add_data_source, remove_data_source, append_case_audit,
 )
 from .classifier import classify_findings
 from .config import analyze_configs
+from .container import analyze_containers
 from .deleted import detect_deleted, recover_file, carve_files, CARVE_GROUPS, SAFE_RECOVERY_DIR
 from .detector import detect_os, detect_tools
 from .explorer import ARTIFACT_TREE, browse, stat_file, read_text
 from .extractor import FilesystemAccessor
 from .multimedia import analyze_multimedia, ALL_MEDIA_EXTS, EXT_TO_MIME
 from .persistence import detect_persistence
+from .remote import collect_remote_snapshot, collect_remote_host_info, RemoteSnapshotError
 from .report import build_report
+from .reporting import render_report_html, render_report_pdf
 from .services import detect_services
 from .tails import analyze_tails
 from .timeline import build_timeline
@@ -87,7 +93,25 @@ class CarveRequest(BaseModel):
     max_scan_gb: float = 2.0            # scan ceiling in GB
 
 
+class ReportExportRequest(BaseModel):
+    report: dict
+    report_title: Optional[str] = "OS Forensics Comprehensive Report"
+    case_name: Optional[str] = None
+    source_path: Optional[str] = None
+    generated_by: Optional[str] = "OSForensics"
+    case_data: Optional[dict] = None
+    intro_text: Optional[str] = None
+    report_variant: Optional[str] = "comprehensive"
+    include_raw_json: Optional[bool] = True
+
+
 app = FastAPI(title="OS Forensics API")
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    """Return an empty favicon response to avoid browser 404 noise."""
+    return Response(status_code=204)
 
 # Allow the UI dev server to call this API during development
 app.add_middleware(
@@ -97,6 +121,82 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _compute_file_hashes(path: str) -> dict:
+    """Return cryptographic fingerprints for regular files."""
+    if not path or not os.path.isfile(path):
+        return {}
+    sha256 = hashlib.sha256()
+    sha1 = hashlib.sha1()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            if not chunk:
+                break
+            sha256.update(chunk)
+            sha1.update(chunk)
+    return {
+        "sha256": sha256.hexdigest(),
+        "sha1": sha1.hexdigest(),
+        "size_bytes": os.path.getsize(path),
+    }
+
+
+def _legal_disclaimer() -> dict:
+    return {
+        "forensic_safe_environment": True,
+        "original_evidence_unmodified": True,
+        "notes": [
+            "Analysis performed in a forensic-safe, read-focused environment.",
+            "Original evidence should remain unmodified and preserved separately.",
+            "Findings should be corroborated with additional investigative methods.",
+        ],
+    }
+
+
+def _safe_filename(value: str, default: str) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return default
+    cleaned = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in raw)
+    cleaned = cleaned.strip("._")
+    return cleaned or default
+
+
+def _attach_legal_context(
+    out: dict,
+    *,
+    evidence_file: str,
+    extraction_method: str,
+    integrity_hashes: Optional[dict] = None,
+) -> dict:
+    """Attach legal-awareness metadata to analysis output."""
+    hashes = integrity_hashes or {}
+    out["evidence_integrity"] = {
+        "evidence_file": evidence_file,
+        "hashes": hashes,
+        "acquisition_time": _utc_now(),
+    }
+    out["evidence_provenance"] = [
+        {
+            "artifact": evidence_file,
+            "source": evidence_file,
+            "extraction_method": extraction_method,
+        }
+    ]
+    out["audit_log"] = out.get("audit_log") or []
+    out["audit_log"].append({
+        "timestamp": _utc_now(),
+        "actor": "osforensics",
+        "action": "analysis_executed",
+        "details": {"evidence_file": evidence_file, "extraction_method": extraction_method},
+    })
+    out["legal_disclaimer"] = _legal_disclaimer()
+    return out
 
 
 # ── Shared helper ─────────────────────────────────────────────────────────────
@@ -113,9 +213,11 @@ def _full_analysis(fs: FilesystemAccessor, tails_focus: bool = False) -> dict:
     browsers   = detect_browsers(fs)
     multimedia = analyze_multimedia(fs)
     tails      = analyze_tails(fs, tool_findings=classified)
+    containers = analyze_containers(fs)
     report = build_report(os_info, classified, timeline=timeline, deleted=deleted,
                           persistence=persistence, config=config, services=services,
-                          browsers=browsers, multimedia=multimedia, tails=tails)
+                          browsers=browsers, multimedia=multimedia, tails=tails,
+                          containers=containers)
     out = report.dict()
     if tails_focus:
         out.setdefault("summary", {})["analysis_mode"] = "tails_os"
@@ -136,12 +238,19 @@ def _live_analysis(req: "LiveScanRequest") -> dict:
     browsers    = detect_browsers(fs)      if req.browsers    else []
     multimedia  = analyze_multimedia(fs)   if req.multimedia  else []
     tails       = analyze_tails(fs, tool_findings=classified)
+    containers  = analyze_containers(fs)
     report = build_report(os_info, classified, timeline=timeline, deleted=deleted,
                           persistence=persistence, config=config, services=services,
-                          browsers=browsers, multimedia=multimedia, tails=tails)
+                          browsers=browsers, multimedia=multimedia, tails=tails,
+                          containers=containers)
     out = report.dict()
     out.setdefault("summary", {})["analysis_mode"] = "live_system"
-    return out
+    return _attach_legal_context(
+        out,
+        evidence_file="/",
+        extraction_method="live_host_filesystem_scan",
+        integrity_hashes={},
+    )
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -154,7 +263,14 @@ def analyze(req: AnalyzeRequest):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     try:
-        return _full_analysis(fs)
+        out = _full_analysis(fs)
+        hashes = _compute_file_hashes(req.image_path)
+        return _attach_legal_context(
+            out,
+            evidence_file=req.image_path,
+            extraction_method="filesystem_accessor_full_analysis",
+            integrity_hashes=hashes,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
 
@@ -167,7 +283,14 @@ def analyze_tails_os(req: AnalyzeRequest):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     try:
-        return _full_analysis(fs, tails_focus=True)
+        out = _full_analysis(fs, tails_focus=True)
+        hashes = _compute_file_hashes(req.image_path)
+        return _attach_legal_context(
+            out,
+            evidence_file=req.image_path,
+            extraction_method="filesystem_accessor_tails_analysis",
+            integrity_hashes=hashes,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
 
@@ -181,7 +304,14 @@ def upload_image(file: UploadFile = File(...)):
         with open(tmp_path, "wb") as out_f:
             shutil.copyfileobj(file.file, out_f)
         fs = FilesystemAccessor(tmp_path)
-        return _full_analysis(fs)
+        out = _full_analysis(fs)
+        hashes = _compute_file_hashes(tmp_path)
+        return _attach_legal_context(
+            out,
+            evidence_file=file.filename or tmp_path,
+            extraction_method="uploaded_image_tempfile_analysis",
+            integrity_hashes=hashes,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
     finally:
@@ -356,6 +486,51 @@ def multimedia_scan(req: AnalyzeRequest):
         raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
 
 
+@app.post("/report/export/html")
+def export_report_html(req: ReportExportRequest):
+    """Render a structured, comprehensive forensic report as downloadable HTML."""
+    try:
+        html_doc = render_report_html(
+            req.report,
+            report_title=req.report_title or "OS Forensics Comprehensive Report",
+            case_name=req.case_name or "",
+            source_path=req.source_path or "",
+            generated_by=req.generated_by or "OSForensics",
+            case_data=req.case_data or None,
+            intro_text=req.intro_text or "",
+            report_variant=req.report_variant or "comprehensive",
+            include_raw_json=req.include_raw_json if req.include_raw_json is not None else True,
+        )
+        filename = _safe_filename(req.case_name or req.report_title or "forensics_report", "forensics_report") + ".html"
+        headers = {"Content-Disposition": f"attachment; filename={filename}"}
+        return Response(content=html_doc, media_type="text/html; charset=utf-8", headers=headers)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
+
+
+@app.post("/report/export/pdf")
+def export_report_pdf(req: ReportExportRequest):
+    """Render a comprehensive forensic report as downloadable PDF."""
+    try:
+        pdf_bytes = render_report_pdf(
+            req.report,
+            report_title=req.report_title or "OS Forensics Comprehensive Report",
+            case_name=req.case_name or "",
+            source_path=req.source_path or "",
+            generated_by=req.generated_by or "OSForensics",
+            case_data=req.case_data or None,
+            intro_text=req.intro_text or "",
+            report_variant=req.report_variant or "comprehensive",
+        )
+        filename = _safe_filename(req.case_name or req.report_title or "forensics_report", "forensics_report") + ".pdf"
+        headers = {"Content-Disposition": f"attachment; filename={filename}"}
+        return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+    except RuntimeError as e:
+        raise HTTPException(status_code=501, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
+
+
 @app.get("/multimedia/view")
 def multimedia_view(
     image_path: str = Query(..., description="Path to disk image or mounted directory"),
@@ -506,6 +681,308 @@ class LiveScanRequest(BaseModel):
     multimedia:  bool = False
 
 
+class SSHAnalyzeRequest(BaseModel):
+    host: str
+    username: str
+    port: int = 22
+    password: Optional[str] = None
+    key_path: Optional[str] = None
+    key_passphrase: Optional[str] = None
+
+    # Optional path scope. Defaults to a curated high-value set when omitted.
+    include_paths: Optional[list[str]] = None
+
+    # Acquisition limits to keep remote collection bounded.
+    connect_timeout: int = 10
+    max_total_mb: int = 1024
+    max_file_mb: int = 32
+    max_files: int = 25_000
+
+    # Scan toggles aligned with local live scan.
+    timeline:    bool = True
+    deleted:     bool = True
+    persistence: bool = True
+    config:      bool = True
+    services:    bool = True
+    browsers:    bool = True
+    multimedia:  bool = False
+
+
+class SSHFSMountAnalyzeRequest(BaseModel):
+    host: str
+    username: str
+    port: int = 22
+    password: Optional[str] = None
+    key_path: Optional[str] = None
+    key_passphrase: Optional[str] = None
+
+    # Remote directory to mount for analysis.
+    remote_path: str = "/"
+    connect_timeout: int = 10
+
+    # Scan toggles aligned with local live scan.
+    timeline:    bool = True
+    deleted:     bool = True
+    persistence: bool = True
+    config:      bool = True
+    services:    bool = True
+    browsers:    bool = True
+    multimedia:  bool = False
+
+
+def _ssh_analysis(req: SSHAnalyzeRequest) -> dict:
+    """Acquire a bounded remote snapshot over SSH, then analyze it locally."""
+    tmp_dir = tempfile.mkdtemp(prefix="osforensics_ssh_")
+    try:
+        snapshot = collect_remote_snapshot(
+            host=req.host,
+            username=req.username,
+            port=req.port,
+            password=req.password,
+            key_path=req.key_path,
+            key_passphrase=req.key_passphrase,
+            include_paths=req.include_paths,
+            out_dir=tmp_dir,
+            connect_timeout=max(2, req.connect_timeout),
+            max_total_bytes=max(1, req.max_total_mb) * 1024 * 1024,
+            max_file_bytes=max(1, req.max_file_mb) * 1024 * 1024,
+            max_files=max(100, req.max_files),
+        )
+
+        fs = FilesystemAccessor(snapshot.local_root)
+        os_info    = detect_os(fs)
+        findings   = detect_tools(fs)
+        classified = classify_findings(findings)
+        timeline    = build_timeline(fs)      if req.timeline    else []
+        deleted     = detect_deleted(fs)      if req.deleted     else []
+        persistence = detect_persistence(fs)  if req.persistence else []
+        config      = analyze_configs(fs)     if req.config      else []
+        services    = detect_services(fs)     if req.services    else []
+        browsers    = detect_browsers(fs)     if req.browsers    else []
+        multimedia  = analyze_multimedia(fs)  if req.multimedia  else []
+        tails       = analyze_tails(fs, tool_findings=classified)
+        containers  = analyze_containers(fs)
+        report = build_report(
+            os_info,
+            classified,
+            timeline=timeline,
+            deleted=deleted,
+            persistence=persistence,
+            config=config,
+            services=services,
+            browsers=browsers,
+            multimedia=multimedia,
+            tails=tails,
+            containers=containers,
+        )
+        out = report.dict()
+        out.setdefault("summary", {})["analysis_mode"] = "remote_ssh_live"
+        out["remote_target"] = {
+            "host": req.host,
+            "port": req.port,
+            "username": req.username,
+            "scheme": "ssh",
+        }
+        out["live_info"] = snapshot.live_info if snapshot.live_info else {
+            "hostname": req.host,
+            "os_name":  out.get("os_info", {}).get("name") or "Linux",
+            "kernel":   "unknown",
+            "uptime_str": "-",
+            "load_avg": [],
+            "memory":   {"total_kb": 0, "available_kb": 0, "used_pct": 0},
+            "interfaces": [],
+            "process_count": 0,
+            "users": [req.username],
+            "scheme": "remote_ssh",
+        }
+        out["acquisition"] = snapshot.to_dict()
+        return _attach_legal_context(
+            out,
+            evidence_file=f"ssh://{req.username}@{req.host}:{req.port}",
+            extraction_method="ssh_snapshot_via_sftp_then_local_analysis",
+            integrity_hashes={},
+        )
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _try_unmount(path: str) -> Optional[str]:
+    """Best-effort unmount helper for FUSE mounts."""
+    attempts = [
+        ["fusermount", "-u", path],
+        ["umount", path],
+    ]
+    errors = []
+    for cmd in attempts:
+        bin_name = cmd[0]
+        if shutil.which(bin_name) is None:
+            continue
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=10)
+            return None
+        except Exception as e:
+            errors.append(f"{' '.join(cmd)}: {e}")
+    if not errors:
+        return "No unmount tool found (fusermount/umount)"
+    return "; ".join(errors)
+
+
+def _sshfs_analysis(req: SSHFSMountAnalyzeRequest) -> dict:
+    """Mount a remote path via SSHFS, analyze it, then unmount."""
+    if shutil.which("sshfs") is None:
+        raise RemoteSnapshotError("sshfs is not installed on the backend host")
+
+    using_password = bool((req.password or "").strip())
+
+    mount_dir = tempfile.mkdtemp(prefix="osforensics_sshfs_")
+    mounted = False
+    unmount_warning = None
+
+    try:
+        remote_path = (req.remote_path or "/").strip() or "/"
+        if not remote_path.startswith("/"):
+            remote_path = f"/{remote_path}"
+
+        remote_spec = f"{req.username}@{req.host}:{remote_path}"
+        mount_cmd = [
+            "sshfs",
+            remote_spec,
+            mount_dir,
+            "-p", str(req.port),
+            "-o", "ro",
+            "-o", f"ConnectTimeout={max(2, req.connect_timeout)}",
+            "-o", "ServerAliveInterval=15",
+            "-o", "ServerAliveCountMax=3",
+            "-o", "StrictHostKeyChecking=accept-new",
+        ]
+
+        key_path = (req.key_path or "").strip()
+        if key_path:
+            expanded_key = os.path.expanduser(key_path)
+            mount_cmd += ["-o", f"IdentityFile={expanded_key}", "-o", "BatchMode=yes"]
+
+        timeout = max(15, req.connect_timeout + 10)
+        if using_password:
+            # Prefer native sshfs password input to avoid requiring sshpass.
+            pwd_cmd = mount_cmd + ["-o", "password_stdin"]
+            result = subprocess.run(
+                pwd_cmd,
+                input=(req.password or "") + "\n",
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            if result.returncode != 0:
+                err = (result.stderr or result.stdout or "sshfs mount failed").strip()
+                # Some sshfs builds may not support password_stdin.
+                if "password_stdin" in err.lower() and shutil.which("sshpass") is not None:
+                    result = subprocess.run(
+                        ["sshpass", "-p", req.password] + mount_cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout,
+                    )
+                    if result.returncode != 0:
+                        err = (result.stderr or result.stdout or "sshfs mount failed").strip()
+                        raise RemoteSnapshotError(err)
+                elif "password_stdin" in err.lower() and shutil.which("sshpass") is None:
+                    raise RemoteSnapshotError(
+                        "This sshfs build does not support password_stdin. "
+                        "Install sshpass on backend host or use key-based auth."
+                    )
+                else:
+                    raise RemoteSnapshotError(err)
+        else:
+            result = subprocess.run(
+                mount_cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            if result.returncode != 0:
+                err = (result.stderr or result.stdout or "sshfs mount failed").strip()
+                raise RemoteSnapshotError(err)
+        mounted = True
+
+        fs = FilesystemAccessor(mount_dir)
+        os_info    = detect_os(fs)
+        findings   = detect_tools(fs)
+        classified = classify_findings(findings)
+        timeline    = build_timeline(fs)      if req.timeline    else []
+        deleted     = detect_deleted(fs)      if req.deleted     else []
+        persistence = detect_persistence(fs)  if req.persistence else []
+        config      = analyze_configs(fs)     if req.config      else []
+        services    = detect_services(fs)     if req.services    else []
+        browsers    = detect_browsers(fs)     if req.browsers    else []
+        multimedia  = analyze_multimedia(fs)  if req.multimedia  else []
+        tails       = analyze_tails(fs, tool_findings=classified)
+        containers  = analyze_containers(fs)
+        report = build_report(
+            os_info,
+            classified,
+            timeline=timeline,
+            deleted=deleted,
+            persistence=persistence,
+            config=config,
+            services=services,
+            browsers=browsers,
+            multimedia=multimedia,
+            tails=tails,
+            containers=containers,
+        )
+        out = report.dict()
+        out.setdefault("summary", {})["analysis_mode"] = "remote_sshfs_mount"
+        out["remote_target"] = {
+            "host": req.host,
+            "port": req.port,
+            "username": req.username,
+            "scheme": "sshfs",
+            "remote_path": remote_path,
+        }
+        try:
+            info = collect_remote_host_info(
+                host=req.host,
+                username=req.username,
+                port=req.port,
+                password=req.password,
+                key_path=req.key_path,
+                key_passphrase=req.key_passphrase,
+                connect_timeout=max(2, req.connect_timeout),
+            )
+            out["live_info"] = info
+        except Exception:
+            out["live_info"] = {
+                "hostname": req.host,
+                "os_name": out.get("os_info", {}).get("name") or "Linux",
+                "kernel": "unknown",
+                "uptime_str": "-",
+                "load_avg": [],
+                "memory": {"total_kb": 0, "available_kb": 0, "used_pct": 0},
+                "interfaces": [],
+                "process_count": 0,
+                "users": [req.username],
+                "scheme": "remote_ssh",
+            }
+        out["acquisition"] = {
+            "mode": "sshfs_mount",
+            "mountpoint": mount_dir,
+            "remote_path": remote_path,
+            "readonly": True,
+        }
+        return _attach_legal_context(
+            out,
+            evidence_file=f"sshfs://{req.username}@{req.host}:{req.port}{remote_path}",
+            extraction_method="sshfs_readonly_mount_then_local_analysis",
+            integrity_hashes={},
+        )
+    finally:
+        if mounted:
+            unmount_warning = _try_unmount(mount_dir)
+        if unmount_warning:
+            print(f"[osforensics] WARNING: failed to unmount {mount_dir}: {unmount_warning}")
+        shutil.rmtree(mount_dir, ignore_errors=True)
+
+
 @app.post("/analyze/live")
 def analyze_live(req: LiveScanRequest = None):
     """Forensic analysis of the running host system. Accepts optional scan-type flags."""
@@ -513,6 +990,63 @@ def analyze_live(req: LiveScanRequest = None):
         req = LiveScanRequest()
     try:
         return _live_analysis(req)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
+
+
+@app.post("/analyze/ssh")
+def analyze_ssh(req: SSHAnalyzeRequest):
+    """Run remote live forensics by acquiring a bounded SSH snapshot first."""
+    try:
+        return _ssh_analysis(req)
+    except RemoteSnapshotError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
+
+
+@app.post("/analyze/sshfs")
+def analyze_sshfs(req: SSHFSMountAnalyzeRequest):
+    """Run remote live forensics by auto-mounting the remote path via SSHFS."""
+    try:
+        return _sshfs_analysis(req)
+    except RemoteSnapshotError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
+
+
+class SSHInfoRequest(BaseModel):
+    host: str
+    username: str
+    port: int = 22
+    password: Optional[str] = None
+    key_path: Optional[str] = None
+    key_passphrase: Optional[str] = None
+    connect_timeout: int = 10
+
+
+@app.post("/analyze/ssh/info")
+def analyze_ssh_info(req: SSHInfoRequest):
+    """Quick SSH connect to fetch live system metadata without a full snapshot.
+
+    Returns hostname, OS, kernel, uptime, memory, interfaces, users, etc.
+    Useful for verifying credentials and previewing remote host details before
+    starting a full analysis.
+    """
+    try:
+        info = collect_remote_host_info(
+            host=req.host,
+            username=req.username,
+            port=req.port,
+            password=req.password,
+            key_path=req.key_path,
+            key_passphrase=req.key_passphrase,
+            connect_timeout=max(2, req.connect_timeout),
+        )
+        return info
+    except RemoteSnapshotError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
 
@@ -792,8 +1326,31 @@ def cases_analyze(case_id: str, req: CaseAnalyzeRequest):
 
     try:
         report = _full_analysis(fs)
+        hashes = _compute_file_hashes(req.image_path)
+        report = _attach_legal_context(
+            report,
+            evidence_file=req.image_path,
+            extraction_method="filesystem_accessor_full_analysis",
+            integrity_hashes=hashes,
+        )
         label  = os.path.basename(req.image_path.rstrip("/")) or req.image_path
-        source = add_data_source(case_id, req.image_path, label, report)
+        case_obj = get_case(case_id)
+        actor = case_obj.get("examiner") or "system"
+        source = add_data_source(
+            case_id,
+            req.image_path,
+            label,
+            report,
+            evidence={"acquisition_time": _utc_now(), "hashes": hashes},
+            provenance={
+                "source": req.image_path,
+                "extraction_method": "filesystem_accessor_full_analysis",
+                "original_path": req.image_path,
+            },
+            actor=actor,
+            verified_by=actor,
+        )
+        append_case_audit(case_id, "analysis_module_executed", actor="osforensics", details={"module": "full_analysis", "source_id": source.get("id")})
         return {"source": source, "report": report}
     except Exception as e:
         raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
@@ -816,9 +1373,32 @@ def cases_analyze_tails(case_id: str, req: CaseAnalyzeRequest):
 
     try:
         report = _full_analysis(fs, tails_focus=True)
+        hashes = _compute_file_hashes(req.image_path)
+        report = _attach_legal_context(
+            report,
+            evidence_file=req.image_path,
+            extraction_method="filesystem_accessor_tails_analysis",
+            integrity_hashes=hashes,
+        )
         label_base = os.path.basename(req.image_path.rstrip("/")) or req.image_path
         label = f"{label_base} (TailsOS)"
-        source = add_data_source(case_id, req.image_path, label, report)
+        case_obj = get_case(case_id)
+        actor = case_obj.get("examiner") or "system"
+        source = add_data_source(
+            case_id,
+            req.image_path,
+            label,
+            report,
+            evidence={"acquisition_time": _utc_now(), "hashes": hashes},
+            provenance={
+                "source": req.image_path,
+                "extraction_method": "filesystem_accessor_tails_analysis",
+                "original_path": req.image_path,
+            },
+            actor=actor,
+            verified_by=actor,
+        )
+        append_case_audit(case_id, "analysis_module_executed", actor="osforensics", details={"module": "tails_analysis", "source_id": source.get("id")})
         return {"source": source, "report": report}
     except Exception as e:
         raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
@@ -842,8 +1422,105 @@ def cases_analyze_live(case_id: str, req: LiveScanRequest = None):
         host = info.get("hostname") or "live-host"
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
         label = f"Live System ({host}) [{ts}]"
-        source = add_data_source(case_id, "/", label, report)
+        case_obj = get_case(case_id)
+        actor = case_obj.get("examiner") or "system"
+        source = add_data_source(
+            case_id,
+            "/",
+            label,
+            report,
+            evidence={"acquisition_time": _utc_now(), "hashes": {}},
+            provenance={
+                "source": "/",
+                "extraction_method": "live_host_filesystem_scan",
+                "original_path": "/",
+            },
+            actor=actor,
+            verified_by=actor,
+        )
+        append_case_audit(case_id, "analysis_module_executed", actor="osforensics", details={"module": "live_analysis", "source_id": source.get("id")})
         return {"source": source, "report": report, "live_info": info}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
+
+
+@app.post("/cases/{case_id}/analyze/ssh")
+def cases_analyze_ssh(case_id: str, req: SSHAnalyzeRequest):
+    """Run remote SSH live-system scan and save results under the selected case."""
+    try:
+        get_case(case_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    try:
+        report = _ssh_analysis(req)
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
+        label = f"Remote SSH ({req.username}@{req.host}:{req.port}) [{ts}]"
+        source_path = f"ssh://{req.username}@{req.host}:{req.port}"
+        case_obj = get_case(case_id)
+        actor = case_obj.get("examiner") or "system"
+        source = add_data_source(
+            case_id,
+            source_path,
+            label,
+            report,
+            evidence={"acquisition_time": _utc_now(), "hashes": {}},
+            provenance={
+                "source": source_path,
+                "extraction_method": "ssh_snapshot_via_sftp_then_local_analysis",
+                "original_path": source_path,
+            },
+            actor=actor,
+            verified_by=actor,
+        )
+        append_case_audit(case_id, "analysis_module_executed", actor="osforensics", details={"module": "remote_ssh_analysis", "source_id": source.get("id")})
+        return {"source": source, "report": report}
+    except RemoteSnapshotError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
+
+
+@app.post("/cases/{case_id}/analyze/sshfs")
+def cases_analyze_sshfs(case_id: str, req: SSHFSMountAnalyzeRequest):
+    """Run remote SSHFS-mounted scan and save results under the selected case."""
+    try:
+        get_case(case_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    try:
+        report = _sshfs_analysis(req)
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
+        remote_path = (req.remote_path or "/").strip() or "/"
+        if not remote_path.startswith("/"):
+            remote_path = f"/{remote_path}"
+        label = f"Remote SSHFS ({req.username}@{req.host}:{req.port}{remote_path}) [{ts}]"
+        source_path = f"sshfs://{req.username}@{req.host}:{req.port}{remote_path}"
+        case_obj = get_case(case_id)
+        actor = case_obj.get("examiner") or "system"
+        source = add_data_source(
+            case_id,
+            source_path,
+            label,
+            report,
+            evidence={"acquisition_time": _utc_now(), "hashes": {}},
+            provenance={
+                "source": source_path,
+                "extraction_method": "sshfs_readonly_mount_then_local_analysis",
+                "original_path": source_path,
+            },
+            actor=actor,
+            verified_by=actor,
+        )
+        append_case_audit(case_id, "analysis_module_executed", actor="osforensics", details={"module": "remote_sshfs_analysis", "source_id": source.get("id")})
+        return {"source": source, "report": report}
+    except RemoteSnapshotError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
 
