@@ -41,7 +41,7 @@ from . import agent_tools as tools
 
 # ── Gemini configuration ───────────────────────────────────────────────────────
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY","AIzaSyDev1aIHB9AgmSYNMf2eP2sz_3_3hA4OD0")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY","")
 DEFAULT_MODEL  = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
 MAX_OBS_CHARS  = 4000   # truncate large tool outputs before re-feeding to LLM
 
@@ -377,6 +377,16 @@ class InvestigationAgent:
             ]
         except Exception:
             return []
+
+    # ── Simple Chat ───────────────────────────────────────────────────────────
+
+    def chat(self, prompt: str) -> str:
+        """One-off interaction with the AI model (no ReAct loop)."""
+        client = self._get_client()
+        system = "You are a professional digital forensics investigator. Provide concise, expert analysis."
+        messages = [{"role": "user", "content": prompt}]
+        gemini_history = _messages_to_gemini(messages)
+        return _gemini_chat(gemini_history, system, client)
 
     # ── ReAct loop ─────────────────────────────────────────────────────────────
 

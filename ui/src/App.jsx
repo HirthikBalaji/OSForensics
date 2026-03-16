@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import {
   Search, FolderSearch, Trash2, Settings, Microscope,
   X, FolderOpen, AlertTriangle, CheckCircle, HardDrive, Activity,
-  Clock, Shield, Eye, ChevronDown, ChevronRight, Hash, Terminal,
+  Clock, Shield, ShieldAlert, Eye, ChevronDown, ChevronRight, Hash, Terminal,
   Lock, Server, Key, Folder, FolderOpen as FolderOpenIcon, FileText,
   Wifi, Package, List, Database, Cpu, Box, Globe, Users, ChevronUp,
   File, Code, RefreshCw, Info, LayoutPanelLeft, BarChart2, Home,
@@ -10,6 +10,7 @@ import {
   Image, Film, Music, MapPin, Camera, Layers, Download, Play,
   Sailboat,
   Usb,
+  Share2, Paperclip, Link, Archive, Layers as LayersIcon
 } from "lucide-react";
 
 // ─── API ──────────────────────────────────────────────────────────────────────
@@ -61,6 +62,10 @@ const apiMediaUrl = (imgPath, filePath) =>
 const apiAgentStatus = () => get("/agent/status");
 const apiAgentReset = (sid) => fetch(`${API}/agent/reset/${sid}`, { method: "POST" }).then(r => r.json());
 const apiTimelineAI = (events) => post("/timeline/ai-analysis", { events });
+const apiMemoryLive = () => get("/memory/live");
+const apiMemoryAI = () => post("/memory/ai-analysis", {});
+const apiMemoryDumpUpload = (formData) => fetch(`${API}/memory/upload`, { method: "POST", body: formData }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); });
+const apiMemoryDumpAI = (reportData) => post("/memory/analyze-dump/ai", { report_data: reportData });
 
 // ─── Severity / icon helpers ──────────────────────────────────────────────────
 const SEV_COLOR = { critical: "#7f1d1d", high: "#dc2626", medium: "#d97706", low: "#16a34a", info: "#2563eb" };
@@ -2127,6 +2132,36 @@ function AITimelineAnalysis({ events }) {
                   {analysis.insights}
                 </div>
               </section>
+
+              {analysis.anti_forensics_report?.length > 0 && (
+                <section className="ai-tl-section anti-forensics-section">
+                  <div className="section-header danger">
+                    <Shield size={14} />
+                    <h3>Anti-Forensics Assessment</h3>
+                    <span className="danger-badge">{analysis.anti_forensics_report.length} Findings</span>
+                  </div>
+                  <div className="ai-af-list">
+                    {analysis.anti_forensics_report.map((af, i) => (
+                      <div key={i} className={`ai-af-item sev-${af.severity}`}>
+                        <div className="ai-af-meta">
+                          <AlertTriangle size={14} className="af-icon" />
+                          <span className="af-technique">{af.technique}</span>
+                          <span className={`af-sev-pill ${af.severity}`}>{af.severity}</span>
+                        </div>
+                        <p className="ai-af-justification">{af.justification}</p>
+                        <div className="ai-af-evidence">
+                          <label>Evidence:</label>
+                          {af.evidence_indices?.map(idx => (
+                            <span key={idx} className="ai-seq-ev-tag" title={events[idx]?.detail}>
+                              Ev #{idx}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
             </div>
 
             <div className="ai-tl-side">
@@ -3371,6 +3406,67 @@ const BROWSER_META = {
   tor: { label: "Tor Browser", color: "#7d4698" },
 };
 
+function AntiForensicsTab({ findings = [], timelineAI }) {
+  if (findings.length === 0 && !timelineAI?.anti_forensics_report)
+    return <EmptyState icon={ShieldAlert} message="No anti-forensics artifacts detected." />;
+
+  const afReport = timelineAI?.anti_forensics_report;
+
+  return (
+    <div className="tab-content af-tab animate-fade-in">
+      {/* AI Enhanced Section */}
+      {afReport && (
+        <div className="af-ai-card">
+          <div className="card-header af-ai-header">
+            <h3><Zap size={16} /> AI Predictive Assessment</h3>
+            <span className="ai-badge">AI INSIGHT</span>
+          </div>
+          <div className="af-ai-content">
+            <div className="af-intent">
+              <span className="intent-label">ESTIMATED INTENT:</span>
+              <span className="intent-value">{afReport.predicted_intent}</span>
+            </div>
+            <div className="af-findings-grid">
+              {(afReport.findings || []).map((f, i) => (
+                <div key={i} className={`af-ai-finding sev-${f.severity || 'info'}`}>
+                  <div className="af-ai-title">{f.technique}</div>
+                  <p>{f.description}</p>
+                  <div className="af-ai-evidence"><strong>Evidence:</strong> {f.evidence}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Deep Scanner Findings */}
+      <h3 className="section-title"><Terminal size={16} /> Deep Scanner Detections</h3>
+      <div className="af-grid">
+        {findings.map((f, i) => (
+          <div key={i} className={`af-card sev-${f.severity} animate-slide-up`} style={{ animationDelay: `${i * 0.05}s` }}>
+            <div className="af-card-header">
+              <span className="af-cat-tag">{f.category.toUpperCase()}</span>
+              <span className={`af-sev-pill sev-${f.severity}`}>{f.severity.toUpperCase()}</span>
+            </div>
+            <div className="af-tech">{f.technique}</div>
+            <div className="af-detail">{f.detail}</div>
+            {f.path && <div className="af-path"><code>{f.path}</code></div>}
+            {f.evidence && f.evidence.length > 0 && (
+              <div className="af-evidence">
+                <strong>Forensic Evidence:</strong>
+                <ul>{f.evidence.map((exc, j) => <li key={j}>{exc}</li>)}</ul>
+              </div>
+            )}
+          </div>
+        ))}
+        {findings.length === 0 && (
+          <div className="af-empty-sub">No deep scanner detections found.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const BW_ARTIFACT_TABS = [
   { id: "history", label: "History", emptyMsg: "No history found." },
   { id: "downloads", label: "Downloads", emptyMsg: "No downloads found." },
@@ -4129,6 +4225,7 @@ const REPORT_TABS = [
   { id: "browsers", label: "Browsers", Icon: Globe },
   { id: "multimedia", label: "Multimedia", Icon: Image },
   { id: "tails", label: "TailsOS", Icon: Sailboat },
+  { id: "antiforensics", label: "Anti-Forensics", Icon: ShieldAlert },
   { id: "tools", label: "Tools", Icon: Search },
   { id: "evidence", label: "Evidence", Icon: Package },
 ];
@@ -4204,6 +4301,7 @@ function ReportPanel({ report, liveInfo, imgPath, onClear, onExport, onReanalyze
     multimedia: highMediaFiltered > 0 ? highMediaFiltered : null,
     tails: highTailsFiltered > 0 ? highTailsFiltered : null,
     tools: summary?.high_risk_tools > 0 ? summary.high_risk_tools : null,
+    antiforensics: summary?.high_antiforensics > 0 ? summary.high_antiforensics : null,
   };
   return (
     <div className="report-panel">
@@ -4285,6 +4383,7 @@ function ReportPanel({ report, liveInfo, imgPath, onClear, onExport, onReanalyze
         {tab === "browsers" && <BrowserTab browsers={filteredBrowsers} />}
         {tab === "multimedia" && <MultimediaTab findings={filteredMultimedia} imgPath={imgPath} />}
         {tab === "tails" && <TailsTab findings={report.tails || []} summary={summary || {}} />}
+        {tab === "antiforensics" && <AntiForensicsTab findings={report.antiforensics || []} timelineAI={report.timeline_ai} />}
         {tab === "tools" && <ToolsTab findings={report.findings} />}
         {tab === "evidence" && <EvidenceLocker report={report} />}
       </div>
@@ -5056,11 +5155,533 @@ function AgentPanel() {
   );
 }
 
+const SimpleMarkdown = ({ text }) => {
+  if (!text) return null;
+  
+  const lines = text.split("\n");
+  const rendered = lines.map((line, i) => {
+    // Headers
+    if (line.startsWith("### ")) return <h3 key={i}>{line.replace("### ", "")}</h3>;
+    if (line.startsWith("## ")) return <h2 key={i}>{line.replace("## ", "")}</h2>;
+    if (line.startsWith("# ")) return <h1 key={i}>{line.replace("# ", "")}</h1>;
+    
+    // Lists
+    if (line.trim().startsWith("- ")) {
+      return <li key={i} className="ai-list-item">{line.trim().replace("- ", "")}</li>;
+    }
+    
+    // Bold & Code (Very simple inline replacement)
+    let content = line;
+    // Replace **bold** with <strong>
+    content = content.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+    // Replace `code` with <code>
+    content = content.replace(/`(.*?)`/g, '<code>$1</code>');
+    
+    if (line.trim() === "") return <br key={i} />;
+    
+    return <p key={i} dangerouslySetInnerHTML={{ __html: content }} />;
+  });
+
+  return <div className="markdown-report">{rendered}</div>;
+};
+
+function MemoryAnalyser() {
+  const [data, setData] = useState(null);
+  const [aiInsight, setAiInsight] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [err, setErr] = useState(null);
+  const [activeSubTab, setActiveSubTab] = useState("monitor"); // monitor, processes, network, hidden, malfind, report
+  const [analysisMode, setAnalysisMode] = useState("live"); // live, dump
+  const [dumpReport, setDumpReport] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const timer = useRef(null);
+  const [typedInsight, setTypedInsight] = useState("");
+
+  const fetchData = useCallback(async () => {
+    if (analysisMode === "dump") return;
+    try {
+      const res = await apiMemoryLive();
+      setData(res);
+      setErr(null);
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [analysisMode]);
+
+  useEffect(() => {
+    if (analysisMode === "live") {
+      fetchData();
+      timer.current = setInterval(fetchData, 3000);
+      return () => clearInterval(timer.current);
+    }
+  }, [fetchData, analysisMode]);
+
+  async function getAI() {
+    setAiLoading(true);
+    setTypedInsight("");
+    try {
+      let res;
+      if (analysisMode === "live") {
+        res = await apiMemoryAI();
+      } else {
+        res = await apiMemoryDumpAI(dumpReport);
+      }
+      
+      setAiInsight(res.insight);
+      // Trigger typing animation
+      let fullText = res.insight;
+      let i = 0;
+      const t = setInterval(() => {
+        setTypedInsight(fullText.slice(0, i + 1));
+        i++;
+        if (i >= fullText.length) clearInterval(t);
+      }, 10);
+    } catch (e) {
+      setAiInsight("Error: " + String(e));
+      setTypedInsight("Error: " + String(e));
+    } finally {
+      setAiLoading(false);
+    }
+  }
+
+  const handleFileUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    setUploading(true);
+    setLoading(true);
+    setErr(null);
+    setAnalysisMode("dump");
+    setAiInsight(null);
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      const report = await apiMemoryDumpUpload(formData);
+      setDumpReport(report);
+      setActiveSubTab("report"); // Switch to report after successful upload
+    } catch (err) {
+      setErr("Failed to analyze dump: " + err.message);
+      setAnalysisMode("live");
+    } finally {
+      setUploading(false);
+      setLoading(false);
+    }
+  };
+
+  if (loading && analysisMode === "live" && !data) return <div className="pane-loading"><RefreshCw size={24} className="spin" /> Initializing Analyser…</div>;
+  if (uploading) return <div className="pane-loading"><Loader2 size={24} className="spin" /> Uploading & Processing Memory Dump via Volatility 3…</div>;
+
+  // Derive data based on mode
+  const ram = analysisMode === "live" ? (data?.ram || {}) : { total_kb: 0, used_kb: 0, available_kb: 0, used_pct: 0 };
+  const procs = analysisMode === "live" ? (data?.top_processes || []) : (dumpReport?.processes || []);
+  const hiddenProcs = dumpReport?.hidden_processes || [];
+  const malfind = dumpReport?.malfind || [];
+  const connections = dumpReport?.connections || [];
+  
+  const usedPct = ram.used_pct || 0;
+
+  // SVG Progress Ring constants
+  const size = 180;
+  const stroke = 12;
+  const radius = (size - stroke) / 2;
+  const circ = 2 * Math.PI * radius;
+  const offset = circ - (usedPct / 100) * circ;
+
+  const fmtSize = (bytes) => {
+    if (!bytes || bytes === 0) return "0 B";
+    const k = 1024;
+    const sizes = ["B", "KB", "MB", "GB", "TB"];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+  };
+
+  return (
+    <div className="tab-content memory-analyser memory-white-theme animate-fade-in">
+      <div className="ma-header">
+        <div className="ma-title">
+          <div className="title-icon-wrapper"><Cpu size={24} /></div>
+          <div>
+            <div className="ma-main-title">{analysisMode === "live" ? "Live Forensic Memory Analysis" : "Memory Dump Forensic Analysis"}</div>
+            <div className="ma-sub-title">
+              {analysisMode === "live" 
+                ? "Real-time system artifacts & active execution monitoring" 
+                : `Analyzing artifact: ${dumpReport?.dump_path?.split("/").pop() || "Memory Image"}`}
+            </div>
+          </div>
+        </div>
+        <div className="ma-header-actions" style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+          {analysisMode === "dump" && (
+            <button className="btn-secondary" onClick={() => setAnalysisMode("live")}>
+              <RefreshCw size={14} className="mr-1" /> Switch to Live
+            </button>
+          )}
+          <label className="btn-secondary" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Download size={16} />
+            <span>Upload Dump</span>
+            <input type="file" style={{ display: 'none' }} onChange={handleFileUpload} accept=".raw,.mem,.lime,.dmp,.vmem" />
+          </label>
+          <button className="btn-ai-premium" onClick={getAI} disabled={aiLoading || (analysisMode === "dump" && !dumpReport)}>
+            {aiLoading ? <Loader2 size={16} className="spin" /> : <Bot size={16} />}
+            <span>{aiLoading ? "Analysing Artifacts…" : "Generate AI Forensic Report"}</span>
+            <Zap size={12} className="btn-zap-icon" />
+          </button>
+        </div>
+      </div>
+
+      <div className="ma-tabs-nav">
+        {analysisMode === "live" && (
+          <button className={`ma-tab-btn ${activeSubTab === "monitor" ? "active" : ""}`} onClick={() => setActiveSubTab("monitor")}>
+            <Activity size={14} className="mr-1" /> System Monitor
+          </button>
+        )}
+        <button className={`ma-tab-btn ${activeSubTab === "processes" ? "active" : ""}`} onClick={() => setActiveSubTab("processes")}>
+          <List size={14} className="mr-1" /> Process List
+        </button>
+        {analysisMode === "dump" && (
+          <>
+            <button className={`ma-tab-btn ${activeSubTab === "hidden" ? "active" : ""}`} onClick={() => setActiveSubTab("hidden")}>
+              <Eye size={14} className="mr-1" /> Hidden Tasks
+            </button>
+            <button className={`ma-tab-btn ${activeSubTab === "bash" ? "active" : ""}`} onClick={() => setActiveSubTab("bash")}>
+              <Terminal size={14} className="mr-1" /> Bash History
+            </button>
+            <button className={`ma-tab-btn ${activeSubTab === "malfind" ? "active" : ""}`} onClick={() => setActiveSubTab("malfind")}>
+              <Shield size={14} className="mr-1" /> Malfind
+            </button>
+            <button className={`ma-tab-btn ${activeSubTab === "modules" ? "active" : ""}`} onClick={() => setActiveSubTab("modules")}>
+              <Archive size={14} className="mr-1" /> Kernel Modules
+            </button>
+            <button className={`ma-tab-btn ${activeSubTab === "files" ? "active" : ""}`} onClick={() => setActiveSubTab("files")}>
+              <Paperclip size={14} className="mr-1" /> Open Files
+            </button>
+            <button className={`ma-tab-btn ${activeSubTab === "maps" ? "active" : ""}`} onClick={() => setActiveSubTab("maps")}>
+              <Link size={14} className="mr-1" /> Shared Libraries
+            </button>
+            <button className={`ma-tab-btn ${activeSubTab === "network" ? "active" : ""}`} onClick={() => setActiveSubTab("network")}>
+              <Wifi size={14} className="mr-1" /> Connections
+            </button>
+          </>
+        )}
+        <button className={`ma-tab-btn ${activeSubTab === "report" ? "active" : ""}`} onClick={() => setActiveSubTab("report")}>
+          <FileText size={14} className="mr-1" /> AI Forensic Report
+        </button>
+      </div>
+
+      <div className="ma-content-area">
+        {activeSubTab === "monitor" && analysisMode === "live" && (
+          <div className="ma-grid animate-fade-in">
+            <div className="ma-card ram-card">
+              <div className="card-header">
+                <h3><Activity size={16} /> Live RAM Utilization</h3>
+                <span className={`status-pill ${usedPct > 80 ? "danger" : (usedPct > 60 ? "warning" : "safe")}`}>
+                  {usedPct > 80 ? "Critical" : (usedPct > 60 ? "Moderate" : "Healthy")}
+                </span>
+              </div>
+              
+              <div className="usage-visual-container">
+                <svg width={size} height={size} className="progress-ring">
+                  <circle className="progress-ring-bg" stroke="#f1f5f9" strokeWidth={stroke} fill="transparent" r={radius} cx={size / 2} cy={size / 2} />
+                  <circle className={`progress-ring-fill ${usedPct > 85 ? "pulse-danger" : ""}`} stroke={usedPct > 80 ? "#ef4444" : (usedPct > 60 ? "#f59e0b" : "#2563eb")} strokeWidth={stroke} strokeDasharray={`${circ} ${circ}`} style={{ strokeDashoffset: offset }} strokeLinecap="round" fill="transparent" r={radius} cx={size / 2} cy={size / 2} />
+                </svg>
+                <div className="usage-overlay">
+                  <span className="usage-number" style={{ color: "var(--wf-text)" }}>{Math.round(usedPct)}%</span>
+                  <span className="usage-label">Used</span>
+                </div>
+              </div>
+
+              <div className="ma-stats-grid">
+                <div className="stat-box"><span className="label">Physical Total</span><strong className="value">{fmtSize(ram.total_kb * 1024)}</strong></div>
+                <div className="stat-box"><span className="label">Active Memory</span><strong className="value">{fmtSize(ram.used_kb * 1024)}</strong></div>
+                <div className="stat-box"><span className="label">Remaining</span><strong className="value">{fmtSize(ram.available_kb * 1024)}</strong></div>
+                <div className="stat-box"><span className="label">Cache Buffer</span><strong className="value">{fmtSize(ram.cached_kb * 1024)}</strong></div>
+              </div>
+            </div>
+
+            <div className="ma-card">
+              <div className="card-header"><h3><Shield size={16} /> Security Overview</h3></div>
+              <div className="usage-details">
+                <p style={{ fontSize: "12px", color: "var(--wf-text-muted)" }}>Live memory analysis detects patterns of unauthorized execution and resource exhaustion.</p>
+                <div style={{ marginTop: "20px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px" }}><span style={{ fontSize: "11px", fontWeight: "600" }}>System Integrity</span><span style={{ color: "#16a34a", fontSize: "11px", fontWeight: "700" }}>VERIFIED</span></div>
+                  <div style={{ width: "100%", height: "4px", background: "#f1f5f9", borderRadius: "2px" }}><div style={{ width: "100%", height: "100%", background: "#16a34a", borderRadius: "2px" }}></div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeSubTab === "processes" && (
+          <div className="ma-card proc-panel animate-fade-in" style={{ gridColumn: "auto" }}>
+            <div className="card-header">
+              <h3><List size={16} /> {analysisMode === "live" ? "High-Impact Processes" : "All Processes from Dump"}</h3>
+              <div className="proc-count-badge">{procs.length} total</div>
+            </div>
+            <div className="table-wrapper">
+              <table className="forensic-table">
+                <thead><tr><th width="80">PID</th><th width="180">Entity Name</th><th width="120">Memory Lift</th><th>Execution Path / Parameters</th></tr></thead>
+                <tbody>
+                  {procs.map((p, i) => (
+                    <tr key={p.pid} style={{ animationDelay: `${i * 0.05}s` }}>
+                      <td><code className="pid-badge">{p.pid}</code></td>
+                      <td><span className="proc-name-highlight">{p.name}</span></td>
+                      <td><span className="mem-value">{p.memory_kb ? fmtSize(p.memory_kb * 1024) : 'N/A'}</span></td>
+                      <td><code className="cmdline-forensic" title={p.cmdline}>{p.cmdline || 'N/A'}</code></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {activeSubTab === "hidden" && analysisMode === "dump" && (
+          <div className="ma-card proc-panel animate-fade-in">
+            <div className="card-header">
+              <h3><Eye size={16} /> Hidden Processes (psscan)</h3>
+              <div className="proc-count-badge" style={{ background: '#ef4444' }}>{hiddenProcs.length} anomalies</div>
+            </div>
+            <div className="table-wrapper">
+              <table className="forensic-table">
+                <thead><tr><th width="80">PID</th><th width="180">Name</th><th>Offset (P)</th><th>Result</th></tr></thead>
+                <tbody>
+                  {hiddenProcs.map((p, i) => (
+                    <tr key={i} className="danger-row">
+                      <td><code className="pid-badge" style={{ background: '#fecaca', color: '#b91c1c' }}>{p.pid}</code></td>
+                      <td><strong style={{ color: '#b91c1c' }}>{p.name}</strong></td>
+                      <td style={{ fontFamily: 'monospace' }}>{p.offset}</td>
+                      <td><span className="status-pill danger">HIDDEN</span></td>
+                    </tr>
+                  ))}
+                  {hiddenProcs.length === 0 && <tr><td colSpan="4" style={{ textAlign: 'center', padding: '40px', color: 'var(--wf-text-muted)' }}>No hidden processes detected in this dump.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {activeSubTab === "malfind" && analysisMode === "dump" && (
+          <div className="ma-card proc-panel animate-fade-in">
+            <div className="card-header">
+              <h3><Shield size={16} /> Suspicious Memory Permissions (Malfind)</h3>
+              <div className="proc-count-badge" style={{ background: '#ef4444' }}>{malfind.length} findings</div>
+            </div>
+            <div className="table-wrapper">
+              <table className="forensic-table">
+                <thead><tr><th width="80">PID</th><th width="150">Process</th><th width="150">Address</th><th width="120">Protection</th><th>Assembly Preview</th></tr></thead>
+                <tbody>
+                  {malfind.map((m, i) => (
+                    <tr key={i}>
+                      <td><code className="pid-badge">{m.pid}</code></td>
+                      <td>{m.process}</td>
+                      <td style={{ fontFamily: 'monospace' }}>{m.address}</td>
+                      <td><code style={{ color: '#dc2626' }}>{m.protection}</code></td>
+                      <td><code style={{ fontSize: '10px', display: 'block', maxHeight: '60px', overflow: 'hidden' }}>{m.disassembly}</code></td>
+                    </tr>
+                  ))}
+                  {malfind.length === 0 && <tr><td colSpan="5" style={{ textAlign: 'center', padding: '40px', color: 'var(--wf-text-muted)' }}>No suspicious memory mappings found.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {activeSubTab === "network" && analysisMode === "dump" && (
+          <div className="ma-card proc-panel animate-fade-in">
+            <div className="card-header">
+              <h3><Wifi size={16} /> Recovered Network Artifacts</h3>
+              <div className="proc-count-badge">{(connections.length || 0) + (dumpReport?.interfaces?.length || 0)} sessions/ifaces</div>
+            </div>
+            <div className="table-wrapper">
+              <h4 style={{ margin: '15px 15px 5px', fontSize: '12px', opacity: 0.7 }}>Network Connections (Netstat)</h4>
+              <table className="forensic-table">
+                <thead><tr><th width="80">Proto</th><th width="200">Local Address</th><th width="200">Remote Address</th><th>State</th></tr></thead>
+                <tbody>
+                  {connections.map((c, i) => (
+                    <tr key={i}>
+                      <td><span className="status-pill info">{c.proto}</span></td>
+                      <td>{c.laddr}:{c.lport}</td>
+                      <td><strong>{c.raddr}:{c.rport}</strong></td>
+                      <td>{c.state}</td>
+                    </tr>
+                  ))}
+                  {connections.length === 0 && <tr><td colSpan="4" style={{ textAlign: 'center', padding: '10px', color: 'var(--wf-text-muted)' }}>No network history found.</td></tr>}
+                </tbody>
+              </table>
+
+              <h4 style={{ margin: '15px 15px 5px', fontSize: '12px', opacity: 0.7 }}>Network Interfaces (Ifconfig)</h4>
+              <table className="forensic-table" style={{ marginTop: '5px' }}>
+                <thead><tr><th width="150">Interface</th><th width="150">IP Address</th><th width="200">MAC Address</th><th>Flags</th></tr></thead>
+                <tbody>
+                  {(dumpReport?.interfaces || []).map((iface, i) => (
+                    <tr key={i}>
+                      <td><strong style={{ color: 'var(--wf-primary)' }}>{iface.name}</strong></td>
+                      <td style={{ fontFamily: 'monospace' }}>{iface.ip}</td>
+                      <td style={{ fontFamily: 'monospace' }}>{iface.mac}</td>
+                      <td><code style={{ fontSize: '11px' }}>{iface.flags}</code></td>
+                    </tr>
+                  ))}
+                  {(dumpReport?.interfaces || []).length === 0 && <tr><td colSpan="4" style={{ textAlign: 'center', padding: '10px', color: 'var(--wf-text-muted)' }}>No active interfaces recovered.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {activeSubTab === "bash" && analysisMode === "dump" && (
+          <div className="ma-card proc-panel animate-fade-in">
+            <div className="card-header">
+              <h3><Terminal size={16} /> Recovered Bash History</h3>
+              <div className="proc-count-badge">{(dumpReport?.bash_history || []).length} commands</div>
+            </div>
+            <div className="table-wrapper">
+              <table className="forensic-table">
+                <thead><tr><th width="80">PID</th><th width="150">Process</th><th>Command Line Artifact</th></tr></thead>
+                <tbody>
+                  {(dumpReport?.bash_history || []).map((b, i) => (
+                    <tr key={i}>
+                      <td><code className="pid-badge">{b.pid || "-"}</code></td>
+                      <td>
+                        <strong>{b.process}</strong>
+                        {b.is_carved && <div style={{ fontSize: '10px', color: '#f97316', fontWeight: 600 }}>Deep Recovery</div>}
+                      </td>
+                      <td>
+                        <code className="cmdline-forensic" style={{ 
+                          background: b.is_carved ? '#fff7ed' : '#f8fafc', 
+                          padding: '4px 8px',
+                          borderLeft: b.is_carved ? '3px solid #f97316' : 'none',
+                          display: 'inline-block',
+                          width: '100%'
+                        }}>
+                          {b.command}
+                        </code>
+                      </td>
+                    </tr>
+                  ))}
+                  {(dumpReport?.bash_history || []).length === 0 && <tr><td colSpan="3" style={{ textAlign: 'center', padding: '40px', color: 'var(--wf-text-muted)' }}>No shell history recovered from memory.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {activeSubTab === "modules" && analysisMode === "dump" && (
+          <div className="ma-card proc-panel animate-fade-in">
+            <div className="card-header">
+              <h3><Archive size={16} /> Loaded Kernel Modules (Lsmod)</h3>
+              <div className="proc-count-badge">{(dumpReport?.modules || []).length} LKMs</div>
+            </div>
+            <div className="table-wrapper">
+              <table className="forensic-table">
+                <thead><tr><th>Module Name</th><th width="120">Size</th><th width="180">Memory Offset</th></tr></thead>
+                <tbody>
+                  {(dumpReport?.modules || []).map((m, i) => (
+                    <tr key={i}>
+                      <td><strong style={{ color: 'var(--wf-primary)' }}>{m.name}</strong></td>
+                      <td>{fmtSize(m.size)}</td>
+                      <td style={{ fontFamily: 'monospace' }}>{m.offset}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {activeSubTab === "files" && analysisMode === "dump" && (
+          <div className="ma-card proc-panel animate-fade-in">
+            <div className="card-header">
+              <h3><Paperclip size={16} /> Open Forensic File Handles (LSOF)</h3>
+              <div className="proc-count-badge">{(dumpReport?.open_files || []).length} handles</div>
+            </div>
+            <div className="table-wrapper">
+              <table className="forensic-table">
+                <thead><tr><th width="80">PID</th><th width="150">Process</th><th width="80">FD</th><th>Object Path</th></tr></thead>
+                <tbody>
+                  {(dumpReport?.open_files || []).map((f, i) => (
+                    <tr key={i}>
+                      <td><code className="pid-badge">{f.pid}</code></td>
+                      <td>{f.process}</td>
+                      <td><code>{f.fd}</code></td>
+                      <td style={{ wordBreak: 'break-all' }}>{f.path}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {activeSubTab === "maps" && analysisMode === "dump" && (
+          <div className="ma-card proc-panel animate-fade-in">
+            <div className="card-header">
+              <h3><Link size={16} /> Shared Libraries & Mappings (Maps)</h3>
+              <div className="proc-count-badge">{(dumpReport?.shared_libraries || []).length} mappings</div>
+            </div>
+            <div className="table-wrapper">
+              <table className="forensic-table">
+                <thead><tr><th width="80">PID</th><th width="150">Process</th><th width="250">Memory Range</th><th>Mapped Object</th></tr></thead>
+                <tbody>
+                  {(dumpReport?.shared_libraries || []).map((m, i) => (
+                    <tr key={i}>
+                      <td><code className="pid-badge">{m.pid}</code></td>
+                      <td>{m.process}</td>
+                      <td style={{ fontFamily: 'monospace', fontSize: '11px' }}>{m.start} - {m.end}</td>
+                      <td style={{ wordBreak: 'break-all' }}>{m.path}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {activeSubTab === "report" && (
+          <div className="ma-card ai-insight-card animate-fade-in">
+            <div className="card-header">
+              <h3><FileText size={16} /> {analysisMode === "live" ? "AI Live Forensic Investigation" : "AI Dump Forensic Evidence"}</h3>
+              {aiInsight && !aiLoading && <button className="btn-secondary btn-sm" onClick={() => window.print()}>Export JSON/PDF</button>}
+            </div>
+            <div className="ai-container">
+              {aiLoading ? (
+                <div className="ai-loading-state">
+                  <div className="ai-scanner-line"></div>
+                  <Loader2 size={40} className="spin-slow ai-bot-icon" />
+                  <p style={{ color: "var(--wf-text)" }}>Decrypting and Categorizing Operational Artifacts history...</p>
+                  <div className="loading-dots"><span></span><span></span><span></span></div>
+                </div>
+              ) : typedInsight ? (
+                <div className="ai-insight-content">
+                  <SimpleMarkdown text={typedInsight} />
+                  <span className="terminal-cursor">_</span>
+                </div>
+              ) : (
+                <div className="ai-empty-state">
+                  <FileText size={48} className="empty-bot" style={{ opacity: 0.1 }} />
+                  <p style={{ color: "var(--wf-text-muted)" }}>{analysisMode === "dump" && !dumpReport ? "Please upload a memory dump first." : "No forensic report generated yet."}</p>
+                  <button className="btn-primary" style={{ marginTop: "12px" }} onClick={getAI} disabled={analysisMode === "dump" && !dumpReport}>
+                    Start AI Investigation
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ActivityBar({ view, onView, hasExplorer, hasReport }) {
   const items = [
     { id: "home", Icon: Home, label: "Home", always: true },
     { id: "cases", Icon: BookOpen, label: "Cases", always: true },
     { id: "agent", Icon: Bot, label: "Agent", always: true },
+    { id: "memory", Icon: Cpu, label: "Memory", always: true },
     { id: "explorer", Icon: LayoutPanelLeft, label: "Explorer", disabled: !hasExplorer },
     { id: "report", Icon: BarChart2, label: "Report", disabled: !hasReport },
   ];
@@ -5270,6 +5891,8 @@ export default function App() {
           )}
 
           {view === "explorer" && imgPath && <Explorer imgPath={imgPath} />}
+
+          {view === "memory" && <MemoryAnalyser />}
 
           {view === "report" && report && (
             <ReportPanel

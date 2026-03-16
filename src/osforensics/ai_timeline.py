@@ -14,7 +14,8 @@ You are an expert forensic analyst. You are given a list of timeline events from
 Your task is to:
 1. Identify the "Probable Attack Sequence": Group related events into logical attack phases (e.g., Initial Access, Reconnaissance, Persistence, Exfiltration).
 2. Provide "AI Insights": Synthesize what these events mean collectively. Highlight suspicious patterns that might not be obvious from individual events.
-3. "Predict the Attack": Based on the observed TTPs (Tactics, Techniques, and Procedures), predict what the attacker's ultimate goal likely was, or what their next steps would have been if they weren't stopped.
+3. "Anti-Forensics Assessment": Search for efforts to conceal activity (e.g., log wiping, history clearing, timestomping, use of self-deleting scripts). Justify why these events indicate evasive behavior.
+4. "Predict the Attack": Based on the observed TTPs (Tactics, Techniques, and Procedures), predict what the attacker's ultimate goal likely was, or what their next steps would have been if they weren't stopped.
 
 Respond ONLY with a JSON object in the following format:
 {
@@ -24,6 +25,14 @@ Respond ONLY with a JSON object in the following format:
       "description": "Brief description of what happened in this phase",
       "event_indices": [0, 1, 2],
       "severity": "info|medium|high|critical"
+    }
+  ],
+  "anti_forensics_report": [
+    {
+      "technique": "Technique Name",
+      "justification": "Detailed explanation of why this is considered anti-forensics",
+      "evidence_indices": [3, 4],
+      "severity": "high|critical"
     }
   ],
   "insights": "General forensic insights about the timeline...",
