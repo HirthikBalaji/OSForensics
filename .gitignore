@@ -11,7 +11,7 @@ wheels/
 
 # Virtual environments
 .venv
-
+.env
 # Node / UI
 ui/node_modules/
 ui/dist/

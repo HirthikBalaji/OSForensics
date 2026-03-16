@@ -67,6 +67,10 @@ from .reporting import render_report_html, render_report_pdf
 from .services import detect_services
 from .tails import analyze_tails
 from .timeline import build_timeline
+from .ai_timeline import analyze_timeline_ai
+from .live_memory import get_live_ram_info, get_top_memory_processes, generate_memory_ai_insight, generate_dump_ai_insight
+from .memory import analyze_memory
+from .antiforensics import detect_antiforensics
 
 
 class AnalyzeRequest(BaseModel):
@@ -92,6 +96,9 @@ class CarveRequest(BaseModel):
     max_files: int = 200
     max_scan_gb: float = 2.0            # scan ceiling in GB
 
+
+class AIAnalyzeTimelineRequest(BaseModel):
+    events: list[dict]
 
 class ReportExportRequest(BaseModel):
     report: dict
@@ -213,11 +220,12 @@ def _full_analysis(fs: FilesystemAccessor, tails_focus: bool = False) -> dict:
     browsers   = detect_browsers(fs)
     multimedia = analyze_multimedia(fs)
     tails      = analyze_tails(fs, tool_findings=classified)
+    antiforensics = detect_antiforensics(fs)
     containers = analyze_containers(fs)
     report = build_report(os_info, classified, timeline=timeline, deleted=deleted,
                           persistence=persistence, config=config, services=services,
                           browsers=browsers, multimedia=multimedia, tails=tails,
-                          containers=containers)
+                          antiforensics=antiforensics, containers=containers)
     out = report.dict()
     if tails_focus:
         out.setdefault("summary", {})["analysis_mode"] = "tails_os"
@@ -238,11 +246,12 @@ def _live_analysis(req: "LiveScanRequest") -> dict:
     browsers    = detect_browsers(fs)      if req.browsers    else []
     multimedia  = analyze_multimedia(fs)   if req.multimedia  else []
     tails       = analyze_tails(fs, tool_findings=classified)
+    antiforensics = detect_antiforensics(fs)
     containers  = analyze_containers(fs)
     report = build_report(os_info, classified, timeline=timeline, deleted=deleted,
                           persistence=persistence, config=config, services=services,
                           browsers=browsers, multimedia=multimedia, tails=tails,
-                          containers=containers)
+                          antiforensics=antiforensics, containers=containers)
     out = report.dict()
     out.setdefault("summary", {})["analysis_mode"] = "live_system"
     return _attach_legal_context(
@@ -334,6 +343,15 @@ def timeline_scan(req: AnalyzeRequest):
         raise HTTPException(status_code=400, detail=str(e))
     try:
         return {"timeline": build_timeline(fs)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
+
+
+@app.post("/timeline/ai-analysis")
+def timeline_ai_analysis(req: AIAnalyzeTimelineRequest):
+    """Deep AI analysis of timeline events for attack sequences and predictions."""
+    try:
+        return analyze_timeline_ai(req.events)
     except Exception as e:
         raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
 
@@ -993,6 +1011,65 @@ def analyze_live(req: LiveScanRequest = None):
     except Exception as e:
         raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
 
+
+@app.get("/memory/live")
+def memory_live():
+    """Real-time RAM and top process statistics."""
+    try:
+        return {
+            "ram": get_live_ram_info(),
+            "top_processes": get_top_memory_processes()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": str(e)})
+
+
+@app.post("/memory/ai-analysis")
+def memory_ai_analysis():
+    """Generate AI insights based on the current live memory state."""
+    try:
+        ram = get_live_ram_info()
+        procs = get_top_memory_processes()
+        insight = generate_memory_ai_insight(ram, procs)
+        return {"insight": insight}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": str(e)})
+
+
+@app.post("/memory/upload")
+def upload_memory_dump(file: UploadFile = File(...)):
+    """Accept an uploaded memory dump, analyze via Volatility 3, then remove the file."""
+    tmp_dir = tempfile.mkdtemp(prefix="osforensics_memdump_")
+    try:
+        tmp_path = os.path.join(tmp_dir, file.filename)
+        with open(tmp_path, "wb") as out_f:
+            shutil.copyfileobj(file.file, out_f)
+        
+        # Run Volatility 3 analysis
+        report = analyze_memory(tmp_path)
+        return report.dict()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": str(e), "trace": traceback.format_exc()})
+    finally:
+        try:
+            file.file.close()
+            shutil.rmtree(tmp_dir)
+        except Exception:
+            pass
+
+
+class MemoryDumpAIRequest(BaseModel):
+    report_data: dict
+
+
+@app.post("/memory/analyze-dump/ai")
+def memory_dump_ai_analysis(req: MemoryDumpAIRequest):
+    """Generate specialized AI forensic insights based on a Volatility 3 MemoryReport."""
+    try:
+        insight = generate_dump_ai_insight(req.report_data)
+        return {"insight": insight}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": str(e)})
 
 @app.post("/analyze/ssh")
 def analyze_ssh(req: SSHAnalyzeRequest):
