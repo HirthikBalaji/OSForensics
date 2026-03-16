@@ -137,6 +137,262 @@ const TAILS_CATEGORY_LABELS = {
     operational_profile: "Operational Profile",
 };
 
+const CONTAINER_SECTIONS = [
+  ["overview", "Overview"],
+  ["inventory", "Containers"],
+  ["images", "Images"],
+  ["filesystem", "Filesystem"],
+  ["execution", "Execution"],
+  ["network", "Network"],
+  ["privilege", "Privilege"],
+  ["deleted", "Deleted"],
+  ["timeline", "Timeline"],
+  ["k8s", "Kubernetes"],
+  ["risk", "Risk & Chain"],
+];
+
+function ContainerTab({ data = {} }) {
+  const [section, setSection] = useState("overview");
+  const inventory = data.inventory || [];
+  const images = data.images || [];
+  const fsChanges = (data.filesystem || {}).changes || [];
+  const deleted = (data.deleted || []);
+  const timeline = data.timeline || [];
+  const privilegeFindings = ((data.privilege || {}).findings || []);
+  const netConns = ((data.network || {}).connections || []);
+  const execCmds = ((data.execution || {}).commands || []);
+  const offensive = data.offensive_tools || [];
+  const risk = data.risk || {};
+  const runtime = data.runtime || {};
+  const k8s = data.kubernetes || {};
+
+  if (!data.detected) {
+    return (
+      <div className="tab-content">
+        <div className="empty-state">
+          <Box size={34} style={{ opacity: .35 }} />
+          <p style={{ marginTop: 10 }}>No container artifacts detected for this source.</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="tab-content">
+      <div className="ct-head">
+        <div className="ct-head-title"><Box size={14} /> Container Forensics Engine</div>
+        <div className="ct-head-stats">
+          <span className="tag">Runtime: {runtime.primary || "unknown"}</span>
+          <span className="tag">Containers: {risk.container_count || inventory.length}</span>
+          <span className="tag">Active: {risk.active_count || 0}</span>
+          <span className="tag"><AlertTriangle size={10} /> High Risk: {(risk.high_risk_containers || []).length}</span>
+        </div>
+      </div>
+
+      <div className="ct-subtabs">
+        {CONTAINER_SECTIONS.map(([id, label]) => (
+          <button key={id} className={`ct-subtab ${section === id ? "active" : ""}`} onClick={() => setSection(id)}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {section === "overview" && (
+        <div className="ct-block">
+          <table className="rp-table">
+            <tbody>
+              <tr><td>Detected Runtimes</td><td>{(runtime.detected || []).join(", ") || "None"}</td></tr>
+              <tr><td>Runtime Evidence</td><td><code>{(runtime.evidence || []).join(" | ") || "-"}</code></td></tr>
+              <tr><td>Container Count</td><td>{risk.container_count || inventory.length}</td></tr>
+              <tr><td>Active Containers</td><td>{risk.active_count || 0}</td></tr>
+              <tr><td>Max Risk Score</td><td>{risk.max_score || 0}</td></tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {section === "inventory" && (
+        <div className="ct-block">
+          <table className="rp-table">
+            <thead><tr><th>ID</th><th>Name</th><th>Image</th><th>Status</th><th>Created</th><th>Risk</th></tr></thead>
+            <tbody>
+              {inventory.map((c) => (
+                <tr key={c.id}>
+                  <td><code>{String(c.id).slice(0, 12)}</code></td>
+                  <td>{c.name}</td>
+                  <td><code>{c.image}</code></td>
+                  <td>{c.status}</td>
+                  <td>{c.created || "-"}</td>
+                  <td>{c.risk_score}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {section === "images" && (
+        <div className="ct-block">
+          <table className="rp-table">
+            <thead><tr><th>Image</th><th>Digest</th><th>Source</th><th>Suspicious Build Commands</th></tr></thead>
+            <tbody>
+              {images.map((i, idx) => (
+                <tr key={`${i.image}-${idx}`}>
+                  <td><code>{i.image}</code></td>
+                  <td><code>{i.digest || "-"}</code></td>
+                  <td>{i.source || "unknown"}</td>
+                  <td>{(i.suspicious_commands || []).slice(0, 3).join(" | ") || "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {section === "filesystem" && (
+        <div className="ct-block">
+          {(fsChanges.length === 0 && deleted.length === 0) ? (
+            <div className="empty-state" style={{ padding: 20 }}>No layered filesystem deltas recovered.</div>
+          ) : (
+            <>
+              {fsChanges.length > 0 && (
+                <table className="rp-table" style={{ marginBottom: 10 }}>
+                  <thead><tr><th>Container</th><th>UpperDir</th><th>Modified Files</th></tr></thead>
+                  <tbody>
+                    {fsChanges.map((f, i) => (
+                      <tr key={i}>
+                        <td>{f.container}</td>
+                        <td><code>{f.upperdir}</code></td>
+                        <td><code>{(f.modified_files || []).slice(0, 5).join(" | ")}</code></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              {deleted.length > 0 && (
+                <table className="rp-table">
+                  <thead><tr><th>Deleted/Orphan Artifact</th><th>Detail</th></tr></thead>
+                  <tbody>
+                    {deleted.map((d, i) => <tr key={i}><td><code>{d.artifact}</code></td><td>{d.detail}</td></tr>)}
+                  </tbody>
+                </table>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {section === "execution" && (
+        <div className="ct-block">
+          <table className="rp-table">
+            <thead><tr><th>Container</th><th>Recovered Commands</th></tr></thead>
+            <tbody>
+              {execCmds.map((x, i) => (
+                <tr key={i}><td>{x.container}</td><td><code>{(x.commands || []).join(" | ") || "-"}</code></td></tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {section === "network" && (
+        <div className="ct-block">
+          <table className="rp-table">
+            <thead><tr><th>Container</th><th>Connection</th></tr></thead>
+            <tbody>
+              {netConns.slice(0, 120).map((n, i) => (
+                <tr key={i}><td>{n.container}</td><td><code>{n.connection}</code></td></tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {section === "privilege" && (
+        <div className="ct-block">
+          <table className="rp-table">
+            <thead><tr><th>Container</th><th>Severity</th><th>Reasons</th></tr></thead>
+            <tbody>
+              {privilegeFindings.map((p, i) => (
+                <tr key={i}>
+                  <td>{p.container}</td>
+                  <td><SevBadge sev={p.severity || "medium"} /></td>
+                  <td><code>{(p.reasons || []).join(", ")}</code></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="ct-inline-note">Escape indicators: <code>{((data.privilege || {}).escape_indicators || []).join(", ") || "none"}</code></div>
+        </div>
+      )}
+
+      {section === "deleted" && (
+        <div className="ct-block">
+          <table className="rp-table">
+            <thead><tr><th>Artifact</th><th>Detail</th></tr></thead>
+            <tbody>
+              {deleted.map((d, i) => <tr key={i}><td><code>{d.artifact}</code></td><td>{d.detail}</td></tr>)}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {section === "timeline" && (
+        <div className="ct-block">
+          <table className="rp-table">
+            <thead><tr><th>Timestamp</th><th>Event</th></tr></thead>
+            <tbody>
+              {timeline.map((t, i) => <tr key={i}><td>{t.timestamp}</td><td>{t.event}</td></tr>)}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {section === "k8s" && (
+        <div className="ct-block">
+          <table className="rp-table">
+            <tbody>
+              <tr><td>Kubernetes Detected</td><td>{k8s.detected ? "Yes" : "No"}</td></tr>
+              <tr><td>Evidence</td><td><code>{(k8s.evidence || []).join(" | ") || "-"}</code></td></tr>
+              <tr><td>Pods</td><td>{(k8s.pods || []).length}</td></tr>
+              <tr><td>Suspicious Pods</td><td><code>{(k8s.suspicious_pods || []).join(", ") || "none"}</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {section === "risk" && (
+        <div className="ct-block">
+          <table className="rp-table" style={{ marginBottom: 10 }}>
+            <thead><tr><th>Container</th><th>Role</th><th>Risk</th><th>Reasons</th></tr></thead>
+            <tbody>
+              {inventory.slice(0, 40).map((c) => (
+                <tr key={c.id}>
+                  <td>{c.name}</td>
+                  <td>{c.role || "General"}</td>
+                  <td>{c.risk_score}</td>
+                  <td><code>{(c.risk_reasons || []).join(", ")}</code></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <table className="rp-table">
+            <thead><tr><th>Attack Chain Node</th><th>Role</th><th>Reasons</th></tr></thead>
+            <tbody>
+              {(data.attack_chain || []).map((a, i) => (
+                <tr key={i}><td>{a.container}</td><td>{a.role}</td><td><code>{(a.reasons || []).join(", ")}</code></td></tr>
+              ))}
+            </tbody>
+          </table>
+          {offensive.length > 0 && (
+            <div className="ct-inline-note">Offensive tools detected in containers: <code>{offensive.map(o => `${o.container}=[${(o.tools || []).join(',')}]`).join(" | ")}</code></div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TailsTab({ findings = [], summary = {} }) {
     const [search, setSearch] = useState("");
     const [sev, setSev] = useState("all");
@@ -3889,6 +4145,7 @@ const REPORT_TABS = [
   { id: "browsers",    label: "Browsers",    Icon: Globe     },
   { id: "multimedia",  label: "Multimedia",  Icon: Image     },
   { id: "tails",       label: "TailsOS",     Icon: Sailboat  },
+  { id: "containers",  label: "Containers",  Icon: Box       },
   { id: "tools",       label: "Tools",       Icon: Search    },
 ];
 
@@ -3956,6 +4213,17 @@ function ReportPanel({ report, liveInfo, imgPath, onClear, onExport, onReanalyze
   );
   const highMediaFiltered = filteredMultimedia.filter((m) => m.severity === "high" || m.severity === "critical").length;
   const highTailsFiltered = (report.tails || []).filter((t) => t.severity === "high" || t.severity === "critical").length;
+  const containersDetected = !!(report.containers && report.containers.detected);
+  const reportTabs = useMemo(
+    () => REPORT_TABS.filter((t) => t.id !== "containers" || containersDetected),
+    [containersDetected]
+  );
+
+  useEffect(() => {
+    if (!reportTabs.some((t) => t.id === tab)) {
+      setTab("summary");
+    }
+  }, [reportTabs, tab]);
 
   useEffect(() => {
     function recalcVisibleTabs() {
@@ -3969,7 +4237,7 @@ function ReportPanel({ report, liveInfo, imgPath, onClear, onExport, onReanalyze
       }
 
       const gap = 2;
-      const order = REPORT_TABS.map((t) => t.id);
+      const order = reportTabs.map((t) => t.id);
       const moreW = (moreMeasureRef.current?.getBoundingClientRect().width || 74) + gap;
 
       let used = 0;
@@ -4028,10 +4296,10 @@ function ReportPanel({ report, liveInfo, imgPath, onClear, onExport, onReanalyze
       ro.disconnect();
       window.removeEventListener("resize", recalcVisibleTabs);
     };
-  }, [tab, highTimelineFiltered, highDeletedFiltered, highBrowserFiltered, highMediaFiltered, highTailsFiltered]);
+  }, [tab, highTimelineFiltered, highDeletedFiltered, highBrowserFiltered, highMediaFiltered, highTailsFiltered, reportTabs]);
 
-  const visibleTabs = REPORT_TABS.filter((t) => visibleTabIds.includes(t.id));
-  const hiddenTabs = REPORT_TABS.filter((t) => !visibleTabIds.includes(t.id));
+  const visibleTabs = reportTabs.filter((t) => visibleTabIds.includes(t.id));
+  const hiddenTabs = reportTabs.filter((t) => !visibleTabIds.includes(t.id));
 
   useEffect(() => {
     setTabsMenuOpen(false);
@@ -4047,6 +4315,7 @@ function ReportPanel({ report, liveInfo, imgPath, onClear, onExport, onReanalyze
     browsers:    highBrowserFiltered > 0 ? highBrowserFiltered : null,
     multimedia:  highMediaFiltered > 0 ? highMediaFiltered : null,
     tails:       highTailsFiltered > 0 ? highTailsFiltered : null,
+    containers:  summary?.high_containers > 0 ? summary.high_containers : null,
     tools:       summary?.high_risk_tools  > 0 ? summary.high_risk_tools  : null,
   };
   return (
@@ -4098,7 +4367,7 @@ function ReportPanel({ report, liveInfo, imgPath, onClear, onExport, onReanalyze
           </div>
         )}
         <div className="tab-measure-wrap" aria-hidden="true" ref={measureWrapRef}>
-          {REPORT_TABS.map(({ id, label, Icon }) => (
+          {reportTabs.map(({ id, label, Icon }) => (
             <span key={`m-${id}`} data-tab-id={id} className="dash-tab tab-measure-item">
               <Icon size={12} />{label}
               {badge[id] != null && <span className="tab-badge">{badge[id]}</span>}
@@ -4159,6 +4428,7 @@ function ReportPanel({ report, liveInfo, imgPath, onClear, onExport, onReanalyze
         {tab === "browsers"    && <BrowserTab     browsers={filteredBrowsers} />}
         {tab === "multimedia"  && <MultimediaTab  findings={filteredMultimedia} imgPath={imgPath} />}
         {tab === "tails"       && <TailsTab       findings={report.tails || []} summary={summary || {}} />}
+        {tab === "containers"  && <ContainerTab   data={report.containers || {}} />}
         {tab === "tools"       && <ToolsTab       findings={report.findings} />}
       </div>
     </div>

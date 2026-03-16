@@ -1947,6 +1947,72 @@ kbd {
   white-space: nowrap;
 }
 
+.ct-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.ct-head-title {
+  font-size: 13px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ct-head-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.ct-subtabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.ct-subtab {
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--fg-muted);
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ct-subtab:hover {
+  border-color: #93c5fd;
+  color: #1d4ed8;
+}
+
+.ct-subtab.active {
+  background: #dbeafe;
+  border-color: #93c5fd;
+  color: #1d4ed8;
+  font-weight: 700;
+}
+
+.ct-block {
+  background: #fff;
+  border: 1px solid var(--border-lt);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.ct-inline-note {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
 .report-panel-body {
   flex: 1;
   overflow-y: auto;

@@ -51,6 +51,7 @@ from .cases import (
 )
 from .classifier import classify_findings
 from .config import analyze_configs
+from .container import analyze_containers
 from .deleted import detect_deleted, recover_file, carve_files, CARVE_GROUPS, SAFE_RECOVERY_DIR
 from .detector import detect_os, detect_tools
 from .explorer import ARTIFACT_TREE, browse, stat_file, read_text
@@ -113,9 +114,11 @@ def _full_analysis(fs: FilesystemAccessor, tails_focus: bool = False) -> dict:
     browsers   = detect_browsers(fs)
     multimedia = analyze_multimedia(fs)
     tails      = analyze_tails(fs, tool_findings=classified)
+    containers = analyze_containers(fs)
     report = build_report(os_info, classified, timeline=timeline, deleted=deleted,
                           persistence=persistence, config=config, services=services,
-                          browsers=browsers, multimedia=multimedia, tails=tails)
+                          browsers=browsers, multimedia=multimedia, tails=tails,
+                          containers=containers)
     out = report.dict()
     if tails_focus:
         out.setdefault("summary", {})["analysis_mode"] = "tails_os"
@@ -136,9 +139,11 @@ def _live_analysis(req: "LiveScanRequest") -> dict:
     browsers    = detect_browsers(fs)      if req.browsers    else []
     multimedia  = analyze_multimedia(fs)   if req.multimedia  else []
     tails       = analyze_tails(fs, tool_findings=classified)
+    containers  = analyze_containers(fs)
     report = build_report(os_info, classified, timeline=timeline, deleted=deleted,
                           persistence=persistence, config=config, services=services,
-                          browsers=browsers, multimedia=multimedia, tails=tails)
+                          browsers=browsers, multimedia=multimedia, tails=tails,
+                          containers=containers)
     out = report.dict()
     out.setdefault("summary", {})["analysis_mode"] = "live_system"
     return out
